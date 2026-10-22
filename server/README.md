@@ -31,9 +31,28 @@ python3 main.py render-volume --file data/nexrad-latest.ar2
 
 This writes `data/nexrad-latest.png` (800x444 radar frame) and
 `data/frame.png` (800x480 e-ink frame) using the `[bbox]` from
-`config/config.ini`. Set the bbox to the event area first; the unit 2c entry in
-[`../MIGRATION.md`](../MIGRATION.md) has the reference bbox and expected
-values. Pass `--minimum <dBZ>` to change the value cutoff (default 10).
+`config/config.ini`. Set it to the event area before rendering. For the KTLX
+volume above, use the whole supercell around the radar site; the same box also
+drives the OSM street mask:
+
+```ini
+[radar]
+nexrad_id = KTLX
+
+[bbox]
+min_lat = 35.1615
+max_lat = 35.4785
+min_lon = -97.85
+max_lon = -97.15
+
+[forecast]
+timezone = America/Chicago
+```
+
+Expected result for this volume and bbox: 800x444 with 146,670 covered pixels
+of 355,200 and 22,414 pixels at 41 dBZ or more; KTLX is a 9x9
+background-coloured hole around (654, 204). Pass `--minimum <dBZ>` to change
+the value cutoff (default 10).
 
 ### Zones
 https://www.weather.gov/pimar/PubZone
