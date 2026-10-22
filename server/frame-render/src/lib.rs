@@ -1,11 +1,20 @@
-//! Rasterize NEXRAD GeoJSON gates into the radar frame PNG.
+//! Render the radar frame PNG from NEXRAD data.
+//!
+//! Two entry points share the same rasterizer, color table, composite, and
+//! street overlay:
+//!
+//! - `radar`: pre-rendered per-elevation GeoJSON gates (the `nexrad-geojson`
+//!   output);
+//! - `frame`: an Archive II volume, projected and rasterized directly, with no
+//!   GeoJSON intermediate.
 //!
 //! This crate replaces the `gdal_rasterize` / `gdal_calc.py` / `gdaldem` /
-//! `gdal_translate` / PIL sequence in `components/radar/render.py`. The input
-//! GeoJSON and the output grid share the WGS84 lon/lat frame, so no
+//! `gdal_translate` / PIL sequence in `components/radar/render.py`. The gate
+//! coordinates and the output grid share the WGS84 lon/lat frame, so no
 //! reprojection is involved: only an affine geotransform, the GDAL polygon
 //! scanline fill, a nearest-entry color table lookup, and an alpha composite.
 
+pub mod archive;
 pub mod colors;
 pub mod osm;
 pub mod pngio;

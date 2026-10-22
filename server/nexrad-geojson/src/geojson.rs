@@ -89,6 +89,24 @@ pub fn build_bins(
     Ok(bins)
 }
 
+/// Coordinate precision of the GeoJSON artifacts (`[{lon:.4},{lat:.4}]`).
+///
+/// Formatting is the rounding rule, so the fused frame path rounds coordinates
+/// through the same formatting and rasterizes exactly the numbers a GeoJSON
+/// round trip would.
+pub fn geojson_coordinate(value: f64) -> f64 {
+    format!("{value:.4}")
+        .parse()
+        .expect("a formatted float parses back")
+}
+
+/// Value precision of the GeoJSON artifacts (`"value":{value:.1}`).
+pub fn geojson_value(value: f32) -> f64 {
+    format!("{value:.1}")
+        .parse()
+        .expect("a formatted float parses back")
+}
+
 pub fn write_feature_collection<W: Write>(writer: &mut W, bins: &[Bin]) -> std::io::Result<()> {
     writer.write_all(b"{\"type\":\"FeatureCollection\",\"features\":[")?;
 
@@ -146,6 +164,35 @@ mod tests {
                 reflectivity: Some(moment),
                 ..Moments::default()
             },
+        }
+    }
+
+    #[test]
+    fn rounding_matches_the_geojson_text() {
+        let coordinates = [
+            -97.85,
+            -97.14999999999999,
+            -97.123456789,
+            35.1615,
+            -0.00004,
+            -0.00005,
+            -0.00006,
+            1.0000499999999,
+            1.23456789e-9,
+        ];
+        for value in coordinates {
+            assert_eq!(
+                format!("{:.4}", geojson_coordinate(value)),
+                format!("{value:.4}")
+            );
+        }
+
+        let values = [10.0f32, 10.5, 41.45, 254.5, 300.0, -0.04, 998.0];
+        for value in values {
+            assert_eq!(
+                format!("{:.1}", geojson_value(value)),
+                format!("{value:.1}")
+            );
         }
     }
 

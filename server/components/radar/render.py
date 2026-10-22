@@ -24,25 +24,20 @@ def render(volume=paths.RADAR_RAW, minimum: float = 10.0):
     config = Config.instance()
     volume = Path(volume)
 
-    _run_and_check([
-        paths.NEXRAD_JSON_BIN.as_posix(),
-        '--minimum', str(minimum),
-        '-e', '1-3',
-        '-p', 'REF',
-        '-o', paths.RADAR_JSON_BASENAME.as_posix(),
-        volume.as_posix(),
-    ])
-
+    # One process reads the volume, projects the gates, and rasterizes the
+    # frame; no per-elevation GeoJSON files are written.
     _run_and_check([
         paths.FRAME_RENDER_BIN.as_posix(),
-        'radar',
+        'frame',
+        '--archive', volume.as_posix(),
+        '--minimum', str(minimum),
+        '--elevations', '1-3',
         '--min-lon', config['bbox']['min_lon'],
         '--min-lat', config['bbox']['min_lat'],
         '--max-lon', config['bbox']['max_lon'],
         '--max-lat', config['bbox']['max_lat'],
         '--width', str(radar.WIDTH),
         '--height', str(radar.HEIGHT),
-        '--input', paths.RADAR_JSON_BASENAME.as_posix(),
         '--colors', paths.COLORS_FILE.as_posix(),
         '--streets', paths.STREETS_IMG.as_posix(),
         '--output', paths.RADAR_IMG.as_posix(),

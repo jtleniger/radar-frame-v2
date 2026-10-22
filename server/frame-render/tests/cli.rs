@@ -81,6 +81,94 @@ fn radar_args(input: &Path, streets: &Path, output: &Path) -> Vec<String> {
     ]
 }
 
+const MINI_ARCHIVE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../nexrad-geojson/tests/fixtures/ktlx-mini.ar2"
+);
+
+/// `frame-render radar` over the ktlx-mini fixture bbox (`tests/fixtures/README.md`).
+fn fixture_radar_args(input: &Path, streets: &Path, output: &Path) -> Vec<String> {
+    vec![
+        "radar".into(),
+        "--min-lon".into(),
+        "-97.26".into(),
+        "--min-lat".into(),
+        "35.35".into(),
+        "--max-lon".into(),
+        "-97.21".into(),
+        "--max-lat".into(),
+        "35.39".into(),
+        "--width".into(),
+        "800".into(),
+        "--height".into(),
+        "444".into(),
+        "--input".into(),
+        input.display().to_string(),
+        "--colors".into(),
+        COLORS.to_string(),
+        "--streets".into(),
+        streets.display().to_string(),
+        "--output".into(),
+        output.display().to_string(),
+    ]
+}
+
+/// `frame-render frame` over the same fixture bbox, default elevation range.
+fn fixture_frame_args(archive: &Path, streets: &Path, output: &Path) -> Vec<String> {
+    vec![
+        "frame".into(),
+        "--min-lon".into(),
+        "-97.26".into(),
+        "--min-lat".into(),
+        "35.35".into(),
+        "--max-lon".into(),
+        "-97.21".into(),
+        "--max-lat".into(),
+        "35.39".into(),
+        "--width".into(),
+        "800".into(),
+        "--height".into(),
+        "444".into(),
+        "--archive".into(),
+        archive.display().to_string(),
+        "--minimum".into(),
+        "10".into(),
+        "--colors".into(),
+        COLORS.to_string(),
+        "--streets".into(),
+        streets.display().to_string(),
+        "--output".into(),
+        output.display().to_string(),
+    ]
+}
+
+/// Compare two decoded frames pixel for pixel and report the first differences.
+fn assert_same_frame(actual: &Path, expected: &Path) {
+    let actual = pngio::read_rgba(actual).unwrap();
+    let expected = pngio::read_rgba(expected).unwrap();
+    assert_eq!((actual.0, actual.1), (expected.0, expected.1));
+    assert_eq!(actual.2.len(), expected.2.len());
+
+    let differing = actual
+        .2
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(expected.2.as_chunks::<4>().0)
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(index, (a, b))| (index % actual.0, index / actual.0, *a, *b))
+        .collect::<Vec<_>>();
+
+    assert!(
+        differing.is_empty(),
+        "{} of {} pixels differ; first 10: {:?}",
+        differing.len(),
+        actual.0 * actual.1,
+        &differing[..differing.len().min(10)]
+    );
+}
+
 fn run(args: &[String]) -> Output {
     Command::new(BIN).args(args).output().unwrap()
 }
@@ -216,58 +304,12 @@ fn matches_the_gdal_golden_frame() {
         .unwrap();
     }
 
-    let args: Vec<String> = vec![
-        "radar".into(),
-        "--min-lon".into(),
-        "-97.26".into(),
-        "--min-lat".into(),
-        "35.35".into(),
-        "--max-lon".into(),
-        "-97.21".into(),
-        "--max-lat".into(),
-        "35.39".into(),
-        "--width".into(),
-        "800".into(),
-        "--height".into(),
-        "444".into(),
-        "--input".into(),
-        input.display().to_string(),
-        "--colors".into(),
-        COLORS.to_string(),
-        "--streets".into(),
-        streets.display().to_string(),
-        "--output".into(),
-        output.display().to_string(),
-    ];
+    let args = fixture_radar_args(&input, &streets, &output);
 
     let result = run(&args);
     assert!(result.status.success(), "{}", stderr(&result));
 
-    let actual = pngio::read_rgba(&output).unwrap();
-    let expected = pngio::read_rgba(&expected_png).unwrap();
-
-    assert_eq!(actual.0, expected.0);
-    assert_eq!(actual.1, expected.1);
-    assert_eq!(actual.2.len(), expected.2.len());
-
-    let differing = actual
-        .2
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(expected.2.as_chunks::<4>().0)
-        .enumerate()
-        .filter(|(_, (a, b))| a != b)
-        .map(|(index, (a, b))| (index % actual.0, index / actual.0, *a, *b))
-        .collect::<Vec<_>>();
-
-    assert!(
-        differing.is_empty(),
-        "{} of {} pixels differ; first 10: {:?}",
-        differing.len(),
-        actual.0 * actual.1,
-        &differing[..differing.len().min(10)]
-    );
+    assert_same_frame(&output, &expected_png);
 }
 
 /// The street mask that the pre-change GDAL sequence produced for the ktlx-mini
@@ -332,4 +374,105 @@ fn street_mask_matches_the_gdal_golden_mask() {
         actual.width * actual.height,
         &differing[..differing.len().min(10)]
     );
+}
+
+fn with_elevations(mut args: Vec<String>, elevations: &str) -> Vec<String> {
+    args.push("-e".into());
+    args.push(elevations.into());
+    args
+}
+
+/// The fused path must rasterize exactly what the GeoJSON round trip feeds the
+/// `radar` path: same geometry, same 4/1-decimal rounding, same composite.
+#[test]
+fn fused_frame_matches_the_geojson_frame() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ktlx-mini");
+    let archive = Path::new(MINI_ARCHIVE);
+    let streets = fixtures.join("streets.png");
+    let expected_png = fixtures.join("frame.expected.png");
+    let source = fixtures.join("nexrad-latest-REF-1.json");
+    for path in [archive, &streets, &expected_png, &source] {
+        assert!(path.exists(), "missing fixture {}", path.display());
+    }
+
+    // Fused: one process, no GeoJSON input at all.
+    let fused_dir = tempfile::tempdir().unwrap();
+    let fused = fused_dir.path().join("frame.png");
+    // The mini volume has a single elevation.
+    let args = with_elevations(fixture_frame_args(archive, &streets, &fused), "1");
+    let result = run(&args);
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_same_frame(&fused, &expected_png);
+
+    let mut entries: Vec<String> = std::fs::read_dir(fused_dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec!["frame.png"],
+        "fused path wrote an intermediate"
+    );
+
+    // Two-step: the pre-generated fixture GeoJSON, duplicated for the renderer's
+    // three elevations, as in `matches_the_gdal_golden_frame`.
+    let two_step_dir = tempfile::tempdir().unwrap();
+    let input = two_step_dir.path().join("nexrad-latest");
+    let two_step = two_step_dir.path().join("frame.png");
+    for elevation in 1..=3 {
+        std::fs::copy(
+            &source,
+            PathBuf::from(format!("{}-REF-{elevation}.json", input.display())),
+        )
+        .unwrap();
+    }
+    let result = run(&fixture_radar_args(&input, &streets, &two_step));
+    assert!(result.status.success(), "{}", stderr(&result));
+
+    assert_same_frame(&two_step, &expected_png);
+    assert_same_frame(&fused, &two_step);
+}
+
+/// The frame path needs every selected elevation; unlike `nexrad-geojson`,
+/// which warns and continues, a missing elevation is fatal.
+#[test]
+fn fused_frame_refuses_missing_elevations() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ktlx-mini");
+    let archive = Path::new(MINI_ARCHIVE);
+    let streets = fixtures.join("streets.png");
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("frame.png");
+
+    // Default `-e 1-3`; the mini volume only has elevation 1.
+    let result = run(&fixture_frame_args(archive, &streets, &output));
+    assert!(!result.status.success());
+    let err = stderr(&result);
+    assert!(err.starts_with("frame-render: "), "{err}");
+    assert!(err.contains("elevation 2 not present"), "{err}");
+    assert!(!output.exists());
+
+    let args = with_elevations(fixture_frame_args(archive, &streets, &output), "2");
+    let result = run(&args);
+    assert!(!result.status.success());
+    let err = stderr(&result);
+    assert!(err.contains("elevation 2 not present"), "{err}");
+    assert!(!output.exists());
+}
+
+#[test]
+fn fused_frame_rejects_invalid_elevations() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ktlx-mini");
+    let archive = Path::new(MINI_ARCHIVE);
+    let streets = fixtures.join("streets.png");
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("frame.png");
+
+    let args = with_elevations(fixture_frame_args(archive, &streets, &output), "a");
+    let result = run(&args);
+    assert!(!result.status.success());
+    let err = stderr(&result);
+    assert!(err.contains("invalid elevations a"), "{err}");
+    assert!(!output.exists());
 }

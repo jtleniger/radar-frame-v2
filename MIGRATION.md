@@ -18,7 +18,7 @@ stable, and lands with its own tests.
 | 2a | Frame rasterization and compositing | GeoJSON gates -> byte grid, max composite, color table, RGBA PNG, street overlay; replaces the GDAL/PIL steps in `server/components/radar/render.py` | Done: `server/frame-render` (PR #2) |
 | 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Done: `frame-render streets` (PR #3) |
 | 2c | Manual inspection of a historical event | Volume + bbox -> radar/frame image by hand; add a `render-volume` command so no hand-chained steps or S3 "latest" logic is needed | Done: `main.py render-volume` (PR #4) |
-| 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Not started |
+| 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Done: `frame-render frame` (PR #5) |
 | 3 | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `views/`, `modes/`, `state/` | Not started |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
@@ -156,7 +156,9 @@ python3 main.py render-volume --file <path.ar2> [--minimum 10] [--force-streets]
 `render-volume` runs the same three steps as a server frame render, but from a
 local file: `bin/nexrad-geojson --minimum <n> -e 1-3 -p REF`,
 `bin/frame-render radar` over the configured `[bbox]`, then
-`views.storm.render([])` for the info bar and 7-colour quantization. It skips
+`views.storm.render([])` for the info bar and 7-colour quantization. Unit 2d
+replaced the converter and `radar` steps with a single `frame-render frame`
+call; the command's interface and outputs are unchanged. It skips
 `nexrad_level2.latest_object()`, `boto3`, and the forecast providers; `main.py`
 imports Flask, boto3, and the sources only inside the commands that use them.
 It writes `data/nexrad-latest-REF-{1,2,3}.json`, `data/nexrad-latest.png`, and
@@ -306,53 +308,77 @@ refused (see below), and `render-volume` adopted it without a refetch.
   out skel qt;
   ```
 
-## Unit 2d: Archive -> frame in one pass (not started)
+## Unit 2d: Archive -> frame in one pass (done)
 
-Both ends of the pipeline are now ours: unit 1 parses Archive II and projects
-gates to lon/lat, unit 2a rasterizes gate polygons into the frame. The
-per-elevation GeoJSON files between them only exist because the old pipeline
-split the work across a Go converter, GDAL and Python. Nothing else reads them
-(`RADAR_JSON_BASENAME` is used only by `components/radar/render.py`), and for
-the KTLX 2013-05-20 20:59 volume they cost ~68 MB of write-then-reparse per
-frame (24.5 / 19.1 / 24.4 MB).
+`frame-render frame` reads the volume, projects each gate with the same
+`geojson::build_bins` geometry the converter uses, and rasterizes straight into
+the per-elevation grids. The GeoJSON files are gone from the frame path:
+`frame-render radar` stays for GeoJSON inputs (goldens, debugging, other
+products), and `nexrad-geojson` stays as the standalone converter for the
+products the frame path does not use (VEL, SW, ZDR, PHI, RHO).
 
-Yes, the GeoJSON step can be skipped. Scope:
+### Command
 
-- One process, `frame-render frame --archive data/nexrad-latest.ar2 ...`,
-  reading the volume, projecting each gate, and rasterizing directly. Keep the
-  existing `frame-render radar` subcommand for the GeoJSON inputs (goldens,
-  debugging, other products).
-- Reuse `nexrad_geojson::archive2::read_volume`, `geo::Ortho`, and the gate
-  corner geometry from `geojson::build_bins` (ring order A, B, D, C, A) from a
-  shared function, so both paths stay identical by construction instead of by
-  inspection.
-- Keep `--minimum` / `--maximum` value gating and its rounding in the fused
-  path, exactly as `build_bins` does today.
-- Keep one byte grid per elevation so the within-elevation overwrite (later gate
-  wins) and cross-elevation max stay exactly as they are; the grids are 3 x
-  355200 bytes, so this costs nothing. Scanline fill, composite, color table and
-  street overlay are unchanged (already golden-validated).
-- `render.py` collapses to a single subprocess; `render_radar()` keeps its
-  signature.
+```sh
+frame-render frame --archive <volume.ar2> [-e 1-3] [--minimum 10]
+  [--maximum <n>] --min-lon ... --min-lat ... --max-lon ... --max-lat ...
+  --width 800 --height 444 --colors gdal-colors.txt \
+  --streets data/streets.png --output data/nexrad-latest.png
+```
 
-Acceptance:
+`components/radar/render.py` now runs exactly this one subprocess; `render()`
+keeps its signature (`volume`, `minimum`). Nothing writes
+`data/nexrad-latest-REF-{1,2,3}.json` any more, and `constants/paths.py` no
+longer carries the converter path or the JSON basename.
 
-- Byte-identical `data/nexrad-latest.png` versus the two-step path for both the
-  `ktlx-mini` fixture and the 2013-05-20 KTLX volume at the unit 2c bbox, and
-  still identical to `frame-render/tests/fixtures/ktlx-mini/frame.expected.png`
-  (0 differing pixels).
-- No GeoJSON written during a normal frame render; report wall clock and peak
-  RSS before and after for the unit 2c volume.
+### Design
 
-Open questions:
+- Gate geometry, value gating (`998`/`999`, `--minimum`, `--maximum`) and
+  rounding all come from `nexrad-geojson`: `build_bins` produces the rings and
+  the new `geojson_coordinate` / `geojson_value` helpers round them through the
+  same `{:.4}` / `{:.1}` formatting the writer uses. Both paths rasterize the
+  identical numbers by construction, not by inspection.
+- One byte grid per elevation preserves the within-elevation overwrite (later
+  gate wins) and the cross-elevation max; the scanline fill, composite, color
+  table, and street overlay are the unit 2a code, unchanged.
+- The projection origin is the first radial of sweep 1, as in `nexrad-geojson`.
+- `-e` uses `nexrad_geojson::elevations::parse_elevations`, shared with the
+  converter, so both binaries accept exactly `N` and `N-M`. Every selected
+  elevation must be present: a missing one is a hard error, matching the old
+  frame path, which required all three JSON files.
+- No `--emit-geojson` escape hatch: the converter is still shipped and covers
+  debugging and the other products; the fused command writes only the PNG.
 
-- Keep an `--emit-geojson <base>` escape hatch? It would preserve the artifacts
-  for debugging and for the products only `nexrad-geojson` supports today (VEL,
-  SW, ZDR, PHI, RHO) while removing them from the frame path.
-- Elevation selection currently happens in `nexrad-geojson` (`-e 1-3`); the
-  fused binary has to own that flag with the same out-of-range behaviour
-  (missing elevation is a warning there, but a hard error for the frame path
-  today, because `frame-render` requires all three files).
+### Acceptance evidence
+
+- `ktlx-mini`: fused and two-step frames are byte-identical (SHA-256
+  `1dfa293b...`), and both decode to 0 differing pixels of 355,200 against the
+  GDAL/PIL golden `frame-render/tests/fixtures/ktlx-mini/frame.expected.png`
+  (its PNG bytes differ, as the golden came from GDAL).
+  `tests/cli.rs::fused_frame_matches_the_geojson_frame` asserts the equality
+  with both the two-step frame and the golden, and that the fused run leaves no
+  intermediate file behind.
+- 2013-05-20 20:59 KTLX volume at the unit 2c bbox with the fixture street
+  mask: the fused and two-step PNGs are byte-identical (177,246 bytes, SHA-256
+  `c8a90300...`).
+- `components.radar.render.render()` over that volume writes
+  `data/nexrad-latest.png` and no `*-REF-*.json`.
+
+Wall clock and peak RSS for the KTLX volume above, release builds, page cache
+warm, best of three (`/usr/bin/time -v`):
+
+| Path | Wall clock | Peak RSS | Intermediates |
+|---|---|---|---|
+| Two-step | 0.99 s (0.84 decode+write, 0.16 rasterize) | 101 MiB | 68,051,093 bytes of JSON |
+| Fused | 0.94 s | 102 MiB | none |
+
+The volume decode dominates both paths, so wall clock only drops ~5%. The fused
+path removes 68 MB of per-frame disk traffic, the second process, and the
+write-then-reparse dependency on the JSON layout; peak RSS rises ~1 MiB because
+the decoded volume and the frame grids coexist.
+
+Known rough edge: `main.py render-volume` still imports `pytz` through
+`views.storm`, as noted in unit 2c; that is unrelated to the frame path.
 
 ## Unit 3: HTTP/state/forecast layer
 
