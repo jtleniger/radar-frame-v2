@@ -1,0 +1,14 @@
+[Unit]
+Description=Radar Frame Client
+After=network.target
+
+[Service]
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/radar-frame-client
+ExecStart=/home/pi/radar-frame-client/venv/bin/python /home/pi/radar-frame-client/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
