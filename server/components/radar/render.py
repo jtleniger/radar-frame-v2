@@ -1,5 +1,6 @@
 import subprocess
 import logging
+from pathlib import Path
 
 from config.config import Config
 from constants import paths, radar
@@ -19,16 +20,17 @@ def _run_and_check(cmd):
         raise
 
 
-def render():
+def render(volume=paths.RADAR_RAW, minimum: float = 10.0):
     config = Config.instance()
+    volume = Path(volume)
 
     _run_and_check([
         paths.NEXRAD_JSON_BIN.as_posix(),
-        '--minimum', '10',
+        '--minimum', str(minimum),
         '-e', '1-3',
         '-p', 'REF',
         '-o', paths.RADAR_JSON_BASENAME.as_posix(),
-        paths.RADAR_RAW.as_posix(),
+        volume.as_posix(),
     ])
 
     _run_and_check([
