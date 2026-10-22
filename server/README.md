@@ -6,6 +6,7 @@ Build the local binaries once after checkout:
 ```sh
 cargo build --release --manifest-path frame-render/Cargo.toml
 cargo build --release --manifest-path frame-view/Cargo.toml
+cargo build --release --manifest-path radar-frame/Cargo.toml
 mkdir -p bin
 cp frame-render/target/release/frame-render bin/
 cp frame-view/target/release/frame-view bin/
@@ -19,11 +20,20 @@ run the server. The standalone converter `nexrad-geojson` is still built from
 the same checkout for hand-made GeoJSON (VEL, SW, ZDR, PHI, RHO), but the
 server no longer calls it.
 
-Run the server:
+Run the server (also creates `data/palette.png` and the street mask):
 
 ```sh
-gunicorn --timeout 90 --log-level=info -b 0.0.0.0:8000 "main:create_server()"
+./radar-frame/target/release/radar-frame serve
 ```
+
+It binds `0.0.0.0:8000` and writes `radar-frame.log` in the working directory.
+`--mock` uses the built-in forecast data. The Python `main.py` entry point and
+gunicorn service remain only until the unit 3c cutover.
+
+All outbound requests (Open-Meteo, NWS, S3, Overpass) carry the `User-Agent`
+from `[nws] user_agent`; set it to a contact address, as the NWS API asks. When
+the setting is missing the generic `radar-frame` value is used. Forecast data
+is fetched once per scheduled update.
 
 ### Inspecting a historical volume
 
@@ -34,7 +44,7 @@ the 2013 Moore EF5 tornado volume from KTLX:
 curl -o data/nexrad-latest.ar2 \
   "https://unidata-nexrad-level2.s3.amazonaws.com/2013/05/20/KTLX/KTLX20130520_205914_V06.gz"
 
-python3 main.py render-volume --file data/nexrad-latest.ar2
+./radar-frame/target/release/radar-frame render-volume --file data/nexrad-latest.ar2
 ```
 
 This writes `data/nexrad-latest.png` (800x444 radar frame) and
