@@ -17,5 +17,23 @@ Run the server:
 gunicorn --timeout 90 --log-level=info -b 0.0.0.0:8000 "main:create_server()"
 ```
 
+### Inspecting a historical volume
+
+The NEXRAD archive bucket is public, so no credentials are needed. For example,
+the 2013 Moore EF5 tornado volume from KTLX:
+
+```sh
+curl -o data/nexrad-latest.ar2 \
+  "https://unidata-nexrad-level2.s3.amazonaws.com/2013/05/20/KTLX/KTLX20130520_205914_V06.gz"
+
+python3 main.py render-volume --file data/nexrad-latest.ar2
+```
+
+This writes `data/nexrad-latest.png` (800x444 radar frame) and
+`data/frame.png` (800x480 e-ink frame) using the `[bbox]` from
+`config/config.ini`. Set the bbox to the event area first; the unit 2c entry in
+[`../MIGRATION.md`](../MIGRATION.md) has the reference bbox and expected
+values. Pass `--minimum <dBZ>` to change the value cutoff (default 10).
+
 ### Zones
 https://www.weather.gov/pimar/PubZone
