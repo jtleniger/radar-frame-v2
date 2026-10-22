@@ -1,0 +1,16 @@
+[Unit]
+Description=Radar Frame
+After=docker.service
+Requires=docker.service
+
+[Service]
+TimeoutStartSec=0
+Restart=always
+ExecStartPre=-/usr/bin/docker stop %n
+ExecStartPre=-/usr/bin/docker rm %n
+ExecStart=/usr/bin/docker run --rm -p 8000:8000 --name %n radar-frame-arm
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
