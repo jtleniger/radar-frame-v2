@@ -17,6 +17,8 @@ stable, and lands with its own tests.
 | 1 | NEXRAD converter | Archive II -> per-elevation GeoJSON | Done: `server/nexrad-geojson` (PR #1) |
 | 2a | Frame rasterization and compositing | GeoJSON gates -> byte grid, max composite, color table, RGBA PNG, street overlay; replaces the GDAL/PIL steps in `server/components/radar/render.py` | Done: `server/frame-render` (PR #2) |
 | 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Not started |
+| 2c | Manual inspection of a historical event | Volume + bbox -> radar/frame image by hand; add a `render-volume` command so no hand-chained steps or S3 "latest" logic is needed | Not started: interim commands and reference values below |
+| 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Not started |
 | 3 | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `views/`, `modes/`, `state/` | Not started |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
@@ -115,6 +117,200 @@ Overpass OSM line layer with `-burn 255 -ot byte -a_nodata 1`, then
   chunk for the nodata level that unit 2a's renderer already honours.
 - Capture a GDAL golden mask first and compare pixel by pixel.
 - Remove GDAL and PROJ from the deployment only when this lands.
+
+## Unit 2c: Manual inspection of a historical event (not started)
+
+Goal: be able to point the pipeline at any past volume and inspect the resulting
+radar/frame image by hand, without the server, the NWS forecast stack, or
+credentials.
+
+Today that needs four hand-chained steps, because `modes/storm.py` always pulls
+whatever S3 reports as latest and `main.py render-storm` goes through it. The
+interim commands below work as-is; the unit is done when they are a command.
+
+### CLI to add
+
+- `main.py render-volume --file <path.ar2>` (or a `render-frame` command) that
+  runs converter -> `frame-render` -> `views.storm.render([])` for a local
+  volume, skipping `nexrad_level2.latest_object()`, `boto3` and the forecast
+  providers. `views.storm.render` needs `pytz` (via `components.info`, for the
+  timestamp on the info bar), so inspecting an image currently pulls in a
+  dependency the radar path itself does not need.
+- A way to regenerate `data/streets.png` when `[bbox]` changes: today
+  `setup/streets.create()` returns early whenever the PNG exists, so a stale
+  mask keeps the old geography. Either a `setup --force-streets` flag or a bbox
+  stamp next to the mask.
+- Optional: `nexrad-geojson` / `frame-render` need no changes for this; both
+  already take explicit paths.
+
+### Interim steps (work today)
+
+A reference event: the **2013 Moore EF5 tornado**, observed by KTLX (Oklahoma
+City) at 20:59:14Z on 2013-05-20, a few minutes after touchdown.
+
+Volume: `unidata-nexrad-level2`, key
+`2013/05/20/KTLX/KTLX20130520_205914_V06.gz` (11.1 MB, anonymous access). It is
+a build-19 V06 file with all three elevations, so no fixture copying is needed.
+
+Bounding box: the whole supercell around the KTLX site, sized for the 800x444
+frame (`0.70 deg` lon is 63.6 km at this latitude, `0.317 deg` lat is 35.3 km,
+ratio 1.80 = 800/444). A bbox tight on the tornado itself only shows the core at
+the frame edge; this one shows the hook and the cone of silence:
+
+```ini
+[bbox]
+min_lat = 35.1615
+max_lat = 35.4785
+min_lon = -97.85
+max_lon = -97.15
+```
+
+The same `[bbox]` drives both the radar frame and the OSM street mask, so the
+streets are fetched for exactly this area.
+
+All commands from `server/`. Requires `gdal-bin` (still needed for
+`setup/streets.py` until 2b) and the Python requirements (Pillow, requests;
+Flask/pytz/boto3 only for `main.py` and `views/`).
+
+```sh
+cargo build --release --manifest-path nexrad-geojson/Cargo.toml
+cargo build --release --manifest-path frame-render/Cargo.toml
+mkdir -p bin data
+cp nexrad-geojson/target/release/nexrad-geojson bin/
+cp frame-render/target/release/frame-render bin/
+
+# 1. config: copy config/config.example.ini to config/config.ini, then set
+#    nexrad_id = KTLX, forecast timezone = America/Chicago, and the bbox above.
+#    (The example file ships placeholder bounds that are not a valid bbox, and
+#    frame-render rejects a zero-height one.)
+
+# 2. street mask + palette for that bbox. Delete stale artifacts first: the
+#    mask is generated once and then reused even if the bbox changed, which
+#    would silently keep the old geography.
+rm -f data/streets.osm data/streets.tif data/streets.png
+python3 main.py setup
+
+# 3. the event volume (objects from this era are gzip-compressed)
+curl -o data/nexrad-latest.ar2 \
+  "https://unidata-nexrad-level2.s3.amazonaws.com/2013/05/20/KTLX/KTLX20130520_205914_V06.gz"
+
+# 4. archive -> GeoJSON (elevations 1-3)
+bin/nexrad-geojson --minimum 10 -e 1-3 -p REF -o data/nexrad-latest data/nexrad-latest.ar2
+
+# 5. GeoJSON -> radar frame (writes data/nexrad-latest.png, 800x444)
+python3 -c 'from components.radar.render import render; render()'
+
+# 6. frame -> e-ink-ready image (info bar + 7-color quantization)
+python3 -c 'from views import storm; storm.render([])'
+```
+
+Outputs: `data/nexrad-latest-REF-{1,2,3}.json`, `data/nexrad-latest.png`,
+`data/frame.png` (800x480).
+
+`-o` appends `-REF-{elevation}`, so the base name must not contain the product.
+Steps 3-6 can be re-run for any volume without touching `data/streets.png`.
+
+### What to look for
+
+```sh
+python3 - <<'PY'
+import numpy as np
+from PIL import Image
+a = np.array(Image.open('data/nexrad-latest.png'))
+print('frame', a.shape)
+covered = (a[:, :, 0] != 46) | (a[:, :, 1] != 11)
+print('covered pixels', int(covered.sum()), 'of', covered.size)
+strong = (a[:, :, 0] > 200) & (a[:, :, 1] > 100)
+print('>= 41 dBZ pixels', int(strong.sum()))
+print('KTLX site is background:', bool((a[200:209, 650:659, 0] == 46).all()))
+img = Image.open('data/frame.png')
+print('e-ink frame', img.size, img.mode)
+PY
+```
+
+Reference values for this volume and bbox, measured while writing this entry:
+800x444; 146,670 covered pixels of 355,200; 22,414 pixels at 41 dBZ or more;
+KTLX is a background-coloured 9x9 hole around `(654, 204)` (its cone of
+silence). Steps 3-5 were run to get these; step 2's Overpass fetch was refused
+(see below), so the frame used an empty mask. Step 6's quantization was checked
+separately with the same `quantize(7, palette=...)` call.
+
+- The supercell reads as a bow of intense returns sweeping south-west to
+  north-east across the upper half of the frame, with the hook wrapping toward
+  the middle - the mesocyclone that produced the tornado about 15 minutes
+  before this volume.
+- Uncovered background is opaque `(46, 11, 119)` (unit 2a notes why), so
+  "covered" above means "any gate, including the minimum value".
+- `data/frame.png` is 800x480 and uses only the seven palette colours (black,
+  white, red, orange, yellow, green, blue). `views.storm.render([])` passes no
+  alerts, so the bottom bar shows only the timestamp.
+
+### Known rough edges
+
+- `main.py setup` imports Flask; with only Pillow and requests installed, use
+  `python3 -c 'from setup import palette; palette.create()'` and
+  `python3 -c 'from setup import streets; streets.create()'` instead.
+  `views.storm.render` additionally needs `pytz`.
+- The Overpass API is rate limited and rejects automated clients with 4xx
+  (406 from `overpass-api.de` was observed while writing this). If the download
+  fails, write the query output to `data/streets.osm` yourself - `create()`
+  skips fetching when that file exists - and re-run step 2:
+
+  ```
+  [out:xml];
+  way["highway"~"motorway|primary"](35.1615,-97.85,35.4785,-97.15);
+  out body;
+  >;
+  out skel qt;
+  ```
+
+## Unit 2d: Archive -> frame in one pass (not started)
+
+Both ends of the pipeline are now ours: unit 1 parses Archive II and projects
+gates to lon/lat, unit 2a rasterizes gate polygons into the frame. The
+per-elevation GeoJSON files between them only exist because the old pipeline
+split the work across a Go converter, GDAL and Python. Nothing else reads them
+(`RADAR_JSON_BASENAME` is used only by `components/radar/render.py`), and for
+the KTLX 2013-05-20 20:59 volume they cost ~68 MB of write-then-reparse per
+frame (24.5 / 19.1 / 24.4 MB).
+
+Yes, the GeoJSON step can be skipped. Scope:
+
+- One process, `frame-render frame --archive data/nexrad-latest.ar2 ...`,
+  reading the volume, projecting each gate, and rasterizing directly. Keep the
+  existing `frame-render radar` subcommand for the GeoJSON inputs (goldens,
+  debugging, other products).
+- Reuse `nexrad_geojson::archive2::read_volume`, `geo::Ortho`, and the gate
+  corner geometry from `geojson::build_bins` (ring order A, B, D, C, A) from a
+  shared function, so both paths stay identical by construction instead of by
+  inspection.
+- Keep `--minimum` / `--maximum` value gating and its rounding in the fused
+  path, exactly as `build_bins` does today.
+- Keep one byte grid per elevation so the within-elevation overwrite (later gate
+  wins) and cross-elevation max stay exactly as they are; the grids are 3 x
+  355200 bytes, so this costs nothing. Scanline fill, composite, color table and
+  street overlay are unchanged (already golden-validated).
+- `render.py` collapses to a single subprocess; `render_radar()` keeps its
+  signature.
+
+Acceptance:
+
+- Byte-identical `data/nexrad-latest.png` versus the two-step path for both the
+  `ktlx-mini` fixture and the 2013-05-20 KTLX volume at the unit 2c bbox, and
+  still identical to `frame-render/tests/fixtures/ktlx-mini/frame.expected.png`
+  (0 differing pixels).
+- No GeoJSON written during a normal frame render; report wall clock and peak
+  RSS before and after for the unit 2c volume.
+
+Open questions:
+
+- Keep an `--emit-geojson <base>` escape hatch? It would preserve the artifacts
+  for debugging and for the products only `nexrad-geojson` supports today (VEL,
+  SW, ZDR, PHI, RHO) while removing them from the frame path.
+- Elevation selection currently happens in `nexrad-geojson` (`-e 1-3`); the
+  fused binary has to own that flag with the same out-of-range behaviour
+  (missing elevation is a warning there, but a hard error for the frame path
+  today, because `frame-render` requires all three files).
 
 ## Unit 3: HTTP/state/forecast layer
 
