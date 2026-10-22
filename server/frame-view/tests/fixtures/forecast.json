@@ -1,0 +1,126 @@
+{
+  "current": {
+    "temp_f": 101.0,
+    "code": 57,
+    "is_day": false
+  },
+  "hourly": [
+    {
+      "hour": "9pm",
+      "temp_f": 24.0,
+      "code": 3
+    },
+    {
+      "hour": "10pm",
+      "temp_f": 24.0,
+      "code": 50
+    },
+    {
+      "hour": "11pm",
+      "temp_f": 24.0,
+      "code": 53
+    },
+    {
+      "hour": "12am",
+      "temp_f": 24.0,
+      "code": 95
+    },
+    {
+      "hour": "1am",
+      "temp_f": 124.0,
+      "code": 77
+    },
+    {
+      "hour": "2am",
+      "temp_f": 24.0,
+      "code": 95
+    },
+    {
+      "hour": "3am",
+      "temp_f": 124.0,
+      "code": 77
+    },
+    {
+      "hour": "4am",
+      "temp_f": 24.0,
+      "code": 95
+    },
+    {
+      "hour": "5am",
+      "temp_f": 124.0,
+      "code": 77
+    }
+  ],
+  "daily": [
+    {
+      "day": "tue",
+      "high_f": 38.8,
+      "low_f": 123.2,
+      "code": 1
+    },
+    {
+      "day": "wed",
+      "high_f": 112.3,
+      "low_f": -25,
+      "code": 2
+    },
+    {
+      "day": "thu",
+      "high_f": 38.8,
+      "low_f": 12.2,
+      "code": 3
+    },
+    {
+      "day": "fri",
+      "high_f": 38.8,
+      "low_f": 123.2,
+      "code": 45
+    },
+    {
+      "day": "tue",
+      "high_f": 38.8,
+      "low_f": 123.2,
+      "code": 53
+    },
+    {
+      "day": "tue",
+      "high_f": 38.8,
+      "low_f": 123.2,
+      "code": 66
+    },
+    {
+      "day": "tue",
+      "high_f": 38.8,
+      "low_f": 123.2,
+      "code": 77
+    },
+    {
+      "day": "tue",
+      "high_f": 38.8,
+      "low_f": 123.2,
+      "code": 66
+    },
+    {
+      "day": "tue",
+      "high_f": 38.8,
+      "low_f": 123.2,
+      "code": 77
+    }
+  ],
+  "alerts": [
+    {
+      "event": "tornado warning",
+      "level": "Warning",
+      "status": "actual",
+      "effective": "2025-06-01T12:24:56+00:00",
+      "expires": "2025-06-01T13:34:56+00:00"
+    },
+    {
+      "event": "flash flood watch",
+      "level": "Watch",
+      "status": "actual",
+      "effective": "2025-06-01T12:24:56+00:00",
+      "expires": "2025-06-01T13:34:56+00:00"
+    }
+  ]
+}

@@ -1,29 +1,21 @@
 import logging
-from PIL import Image, ImageDraw
+import subprocess
 
-from constants import colors, paths
+from constants import paths
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
+
 
 def create():
-    if paths.PALETTE_IMG.exists():
-        logger.info(f'{paths.PALETTE_IMG} exists, doing nothing')
+    """Write the seven-colour e-ink palette PNG."""
+    cmd = [paths.FRAME_VIEW_BIN.as_posix(), 'palette', '--output', paths.PALETTE_IMG.as_posix()]
 
-    palette_colors = [
-        colors.BLACK,
-        colors.WHITE,
-        colors.RED,
-        colors.ORANGE,
-        colors.YELLOW,
-        colors.GREEN,
-        colors.BLUE
-        ]
-    
-    palette = Image.new("P", (len(palette_colors), 1))
+    _logger.info('command: %s', ' '.join(cmd))
 
-    draw = ImageDraw.Draw(palette)
-
-    for i, color in enumerate(palette_colors):
-        draw.point((i, 0), color)
-
-    palette.save(paths.PALETTE_IMG)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        _logger.error('Command failed with exit code %d', e.returncode)
+        _logger.error('STDOUT: %s', e.stdout)
+        _logger.error('STDERR: %s', e.stderr)
+        raise

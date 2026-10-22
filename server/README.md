@@ -1,18 +1,23 @@
 # radar-frame
 ## Raspberry Pi powered e-ink weather display
 ### Server
-Build the local binary once after checkout:
+Build the local binaries once after checkout:
 
 ```sh
 cargo build --release --manifest-path frame-render/Cargo.toml
+cargo build --release --manifest-path frame-view/Cargo.toml
 mkdir -p bin
 cp frame-render/target/release/frame-render bin/
+cp frame-view/target/release/frame-view bin/
 ```
 
 `frame-render frame` reads the Archive II volume and renders the radar frame in
-one pass; no GeoJSON intermediates are written. The standalone converter
-`nexrad-geojson` is still built from the same checkout for hand-made GeoJSON
-(VEL, SW, ZDR, PHI, RHO), but the server no longer calls it.
+one pass; no GeoJSON intermediates are written. `frame-view` composes the
+800x480 e-ink frames (radar plus info bar, or the forecast panels) and writes
+the palette; it replaces the Pillow/CairoSVG rendering, so neither is needed to
+run the server. The standalone converter `nexrad-geojson` is still built from
+the same checkout for hand-made GeoJSON (VEL, SW, ZDR, PHI, RHO), but the
+server no longer calls it.
 
 Run the server:
 
