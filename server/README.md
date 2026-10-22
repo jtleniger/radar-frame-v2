@@ -1,39 +1,86 @@
 # radar-frame
 ## Raspberry Pi powered e-ink weather display
 ### Server
-Build the local binaries once after checkout:
+
+The server is the Rust `radar-frame` binary: HTTP, the mode schedule, the
+forecast sources, and the setup artifacts. It calls `frame-render` (radar frame
+and street mask) and `frame-view` (e-ink frame and palette) as libraries, so
+there is no Python, Flask, gunicorn, or subprocess left in the deployment.
+
+Build the binary once after checkout:
+
+```sh
+cargo build --release --manifest-path radar-frame/Cargo.toml
+mkdir -p bin
+cp radar-frame/target/release/radar-frame bin/
+```
+
+The standalone CLIs are only needed for debugging. Build them the same way if
+you want them (the service itself does not use them):
 
 ```sh
 cargo build --release --manifest-path frame-render/Cargo.toml
 cargo build --release --manifest-path frame-view/Cargo.toml
-cargo build --release --manifest-path radar-frame/Cargo.toml
-mkdir -p bin
 cp frame-render/target/release/frame-render bin/
 cp frame-view/target/release/frame-view bin/
 ```
 
-`frame-render frame` reads the Archive II volume and renders the radar frame in
-one pass; no GeoJSON intermediates are written. `frame-view` composes the
-800x480 e-ink frames (radar plus info bar, or the forecast panels) and writes
-the palette; it replaces the Pillow/CairoSVG rendering, so neither is needed to
-run the server. The standalone converter `nexrad-geojson` is still built from
-the same checkout for hand-made GeoJSON (VEL, SW, ZDR, PHI, RHO), but the
-server no longer calls it.
+`nexrad-geojson` stays available from the same checkout for hand-made GeoJSON
+(VEL, SW, ZDR, PHI, RHO); the server does not call it.
 
-Run the server (also creates `data/palette.png` and the street mask):
+Configure it by copying the example and editing it:
 
 ```sh
-./radar-frame/target/release/radar-frame serve
+cp config/config.example.ini config/config.ini
+```
+
+Set `[radar] nexrad_id`, the `[bbox]` for the frame, `[forecast] lat`, `lon`, and
+`timezone`, and `[nws] user_agent` (a contact address; the NWS API asks for
+one), `zone`, and `fire_zone`. The example `[bbox]` values are placeholders:
+`frame-render` rejects a zero-height box.
+
+Run the server from `server/`:
+
+```sh
+bin/radar-frame serve [--bind 0.0.0.0:8000] [--mock]
 ```
 
 It binds `0.0.0.0:8000` and writes `radar-frame.log` in the working directory.
-`--mock` uses the built-in forecast data. The Python `main.py` entry point and
-gunicorn service remain only until the unit 3c cutover.
+On startup it creates `data/`, `data/palette.png`, and the street mask (the
+mask is downloaded only when it is missing or stamped for a different
+`[bbox]`). `--mock` uses the built-in forecast data.
 
 All outbound requests (Open-Meteo, NWS, S3, Overpass) carry the `User-Agent`
-from `[nws] user_agent`; set it to a contact address, as the NWS API asks. When
-the setting is missing the generic `radar-frame` value is used. Forecast data
-is fetched once per scheduled update.
+from `[nws] user_agent`. When the setting is missing the generic `radar-frame`
+value is used. Forecast data is fetched once per scheduled update.
+
+### Deployment
+
+The service file expects the repository's `server/` directory at
+`/opt/radar-frame/server`, running as the `radar-frame` user:
+
+```sh
+sudo useradd --system --user-group --home /opt/radar-frame --shell /usr/sbin/nologin radar-frame
+sudo mkdir -p /opt/radar-frame/server/bin /opt/radar-frame/server/config
+sudo cp bin/radar-frame /opt/radar-frame/server/bin/
+sudo cp gdal-colors.txt /opt/radar-frame/server/
+sudo cp config/config.example.ini /opt/radar-frame/server/config/config.ini
+sudo cp radar-frame.example.service /etc/systemd/system/radar-frame.service
+sudo chown -R radar-frame:radar-frame /opt/radar-frame/server
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-frame
+```
+
+Edit `/opt/radar-frame/server/config/config.ini` before starting. The process
+needs write access to its working directory for `data/` and `radar-frame.log`;
+`chown` above covers both. Logs rotate at 100 kB with four backups.
+
+The first start downloads the street mask from Overpass. That service rate
+limits automated clients, so if it refuses the request, write
+`data/streets.osm` by hand with the query in `MIGRATION.md` (unit 2c) and
+restart; the hand-written file is adopted for the current `[bbox]`. Run
+`bin/radar-frame setup --force-streets` to re-download and re-rasterize
+explicitly.
 
 ### Inspecting a historical volume
 
@@ -44,7 +91,7 @@ the 2013 Moore EF5 tornado volume from KTLX:
 curl -o data/nexrad-latest.ar2 \
   "https://unidata-nexrad-level2.s3.amazonaws.com/2013/05/20/KTLX/KTLX20130520_205914_V06.gz"
 
-./radar-frame/target/release/radar-frame render-volume --file data/nexrad-latest.ar2
+bin/radar-frame render-volume --file data/nexrad-latest.ar2
 ```
 
 This writes `data/nexrad-latest.png` (800x444 radar frame) and
@@ -71,6 +118,9 @@ Expected result for this volume and bbox: 800x444 with 146,670 covered pixels
 of 355,200 and 22,414 pixels at 41 dBZ or more; KTLX is a 9x9
 background-coloured hole around (654, 204). Pass `--minimum <dBZ>` to change
 the value cutoff (default 10).
+
+`render-clear [--mock]` and `render-storm [--mock]` compose a frame without
+serving it over HTTP.
 
 ### Zones
 https://www.weather.gov/pimar/PubZone

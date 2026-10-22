@@ -8,10 +8,10 @@ Composes the 800x480 e-ink frames that the server serves on `/frame`:
   bar, mapped to the palette without dithering.
 - `palette`: writes the 7x1 indexed palette PNG (`data/palette.png`).
 
-This replaces `components/info`, `components/forecast`, `components/font`, and
-`setup/palette.py` from the Python implementation. `views/storm.py` and
-`views/clear.py` still gather data from the Python sources; they pass it to this
-binary as JSON on stdin.
+This replaced `components/info`, `components/forecast`, `components/font`, and
+`setup/palette.py`. The Python views (`views/storm.py`, `views/clear.py`)
+gathered the data and passed it to this binary as JSON on stdin; those views
+and the rest of the Python server were removed in unit 3c.
 
 ## Command line
 

@@ -1,9 +1,8 @@
-__pycache__/
-*.pyc
 config/config.ini
 data/
 bin/
 radar-frame.log
+radar-frame.log.*
 nexrad-geojson/target/
 frame-render/target/
 frame-view/target/

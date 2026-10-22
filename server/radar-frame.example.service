@@ -6,9 +6,8 @@ After=network.target
 Type=simple
 User=radar-frame
 Group=radar-frame
-Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=/opt/radar-frame/server
-ExecStart=/opt/radar-frame/server/venv/bin/gunicorn --timeout 90 --log-level=info -b 0.0.0.0:8000 "main:create_server()"
+ExecStart=/opt/radar-frame/server/bin/radar-frame serve
 Restart=always
 RestartSec=10
 

@@ -1,10 +1,11 @@
 # Migration: Python/GDAL service to a Rust service
 
-The server (`server/`) is a Flask app that shells out to GDAL and, until this
-migration, to a Go program (`go-nexrad-geojson`). The client (`client/`) is a
-Python service for a Raspberry Pi e-ink display. The goal is a Rust
-implementation of the whole pipeline with no Go, GDAL, PROJ, or Python runtime
-dependency for the server and client.
+The server (`server/`) was a Flask app that shelled out to GDAL and, until this
+migration, to a Go program (`go-nexrad-geojson`). It is now the Rust
+`server/radar-frame` binary. The client (`client/`) is still a Python service
+for a Raspberry Pi e-ink display. The goal is a Rust implementation of the
+whole pipeline with no Go, GDAL, PROJ, or Python runtime dependency for the
+server and client.
 
 Migration is cutover per unit, not a rewrite behind a flag: each unit replaces a
 working component end to end, keeps the wire protocol and output artifacts
@@ -21,7 +22,7 @@ stable, and lands with its own tests.
 | 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Done: `frame-render frame` (PR #5) |
 | 3a | E-ink frame composition | `views/`, `components/info`, `components/forecast`, `components/font`, palette generation: radar/forecast images, info bar, text, icons, quantization | Done: `server/frame-view` (PR #6) |
 | 3b | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `server/`, `state/`, `modes/`, `sources/`, `setup/` | Done: `server/radar-frame` (PR #7) |
-| 3c | Deployment cutover | Remove the Python server, gunicorn, Pillow/CairoSVG/pytz dependencies, and update services/docs/CI | Not started |
+| 3c | Deployment cutover | Remove the Python server, gunicorn, Pillow/CairoSVG/pytz dependencies, and update services/docs/CI | Done: `radar-frame serve` (unit + README) |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
 
@@ -533,15 +534,62 @@ return 400 instead of Flask's uncaught `KeyError` 500, and `/frame` renders once
 per due interval instead of the Python storm mode's redundant second radar
 render.
 
-## Unit 3c: Deployment cutover
+## Unit 3c: Deployment cutover (done)
 
-- Delete `server/main.py`, `server/server/`, `server/modes/`, `server/state/`,
-  `server/sources/`, `server/config/`, `server/setup/`,
-  `server/requirements.txt`, `server/views/`, `server/static/`,
-  `server/bbox.py`, and `server/states.md` once nothing in the deployment
-  imports them. The HTML templates and stylesheet now live in
-  `server/radar-frame/templates/` and `server/radar-frame/static/`.
-- Replace the gunicorn service with `radar-frame serve` and update `README.md`.
+The deployment is now the Rust binary only. Removed:
+
+- `server/main.py`, `server/bbox.py`, `server/states.md`, and
+  `server/requirements.txt`;
+- `server/server/`, `server/modes/`, `server/state/`, `server/sources/`,
+  `server/setup/`, `server/views/`, `server/static/`, `server/components/`,
+  and `server/constants/`;
+- `server/config/config.py` and `server/config/__init__.py`;
+- `server/radar-frame/tests/fixtures/capture.py`, which imported the Flask
+  tree. Its goldens are unchanged, `tests/api.rs` still compares against them,
+  and the fixture README records the pre-cutover commit for regeneration.
+
+`server/config/` itself stays because the service still reads
+`config/config.ini` relative to its working directory;
+`config/config.example.ini` is the template users copy. `gdal-colors.txt` and
+`server/data/` are runtime inputs rather than Python, so they stay. The HTML
+templates and stylesheet were already duplicate copies of the askama files in
+`server/radar-frame/`, so deleting `views/` and `static/` changes no served
+bytes.
+
+`server/radar-frame.example.service` now runs `bin/radar-frame serve` from
+`/opt/radar-frame/server` as the `radar-frame` user. `PYTHONUNBUFFERED` is
+gone; the log file, its 100 kB rotation and four backups, the
+`0.0.0.0:8000` default bind, and restart-on-failure are unchanged.
+`server/README.md` covers the build, the config copy, the standalone CLIs, the
+deployment layout, and the historical-volume workflow.
+
+Acceptance evidence:
+
+- `find server -name '*.py'` is empty, `git ls-files 'server/*.py'` returns
+  nothing, and `python3 -m compileall -q server` exits 0 with no files.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --all-targets` pass in all four crates (`nexrad-geojson`,
+  `frame-render`, `frame-view`, `radar-frame`).
+- A deployment-shaped directory containing only `bin/radar-frame`,
+  `gdal-colors.txt`, `config/config.ini`, and `data/` (no Python and no
+  `frame-render`/`frame-view` binaries) ran `bin/radar-frame setup` and then
+  `bin/radar-frame render-volume --file data/nexrad-latest.ar2` on the unit 2c
+  KTLX volume: 800x444 RGBA radar frame with SHA-256 `c8a90300...`, matching
+  the unit 2d evidence, and an 800x480 RGB e-ink frame.
+- `bin/radar-frame serve --mock` in that directory served `/` (200),
+  `POST /settings` with `Manual` + `Storm` (200, reflected on the next `/`),
+  `/frame?debug=true` (200 `image/png`, byte-identical to `data/frame.png`),
+  and `/static/style.css` (200, byte-identical to the embedded source).
+- A second clean layout with only a hand-written `data/streets.osm` started
+  `serve` with no Overpass request: it adopted the OSM file, wrote
+  `data/streets.png`, stamped both bbox files, and served `/` and
+  `/static/style.css` with 200.
+- `systemd-analyze verify` accepts the unit once the `/opt` executable and
+  service user exist; against the uninstalled template it reports only that
+  missing path.
+
+The cutover changes what runs, not the HTTP or render code: the live S3/NWS
+`/frame` path and its 304 behaviour remain covered by the unit 3b goldens.
 
 ## Unit 4: Pi client
 
@@ -556,7 +604,8 @@ Scope: `client/main.py` and `client/radar-frame-client.service`.
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo test --all-targets` for `server/nexrad-geojson`.
 - Golden fixture regression (already part of `cargo test`).
-- `python3 -m compileall -q server` while Python remains.
+- `python3 -m compileall -q client` while the Pi client is still Python (the
+  server no longer contains Python).
 
 ## Verifying the current state
 
@@ -586,5 +635,7 @@ mkdir -p bin
 cp nexrad-geojson/target/release/nexrad-geojson bin/
 cp frame-render/target/release/frame-render bin/
 cp frame-view/target/release/frame-view bin/
-python3 -m compileall -q .
+cp radar-frame/target/release/radar-frame bin/
 ```
+
+The server tree has no Python to compile; `client/` stays Python until unit 4.
