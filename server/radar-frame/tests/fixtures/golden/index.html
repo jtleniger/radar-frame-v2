@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Radar Frame</title>
+        <link rel="stylesheet" href="static/style.css" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
+    </head>
+    <body>
+        <main class="content">
+            
+<section class="title">
+<h1>Radar Frame</h1>
+</section>
+<section class="current-frame">
+    <img src="/frame?debug=true" />
+</section>
+<section class="info">
+    <span>Last Updated</span>
+    <span>None</span>
+</section>
+<section class="settings">
+    <form hx-post="/settings" hx-trigger="change" hx-swap="outerHTML">
+    <div>
+        <span>Mode Selection</span>
+        
+    </div>
+    <fieldset>
+        <label for="auto" class="active">Auto</label>
+        <input type="radio" autocomplete="off" id="auto" name="mode-select" value="Auto" checked="checked">
+        <label for="manual" >Manual</label>
+        <input type="radio" autocomplete="off" id="manual" name="mode-select" value="Manual" >
+    </fieldset>
+    <span>Mode</span>
+    <fieldset disabled="disabled">
+        <label for="clear" class="active">Clear</label>
+        <input type="radio" autocomplete="off" id="clear" name="mode" value="Clear" checked="checked">
+        <label for="storm" >Storm</label>
+        <input type="radio" autocomplete="off" id="storm" name="mode" value="Storm" >
+    </fieldset>
+</form>
+</section>
+
+        </main>
+    </body>
+</html>

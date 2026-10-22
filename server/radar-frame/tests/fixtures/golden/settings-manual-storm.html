@@ -1,0 +1,21 @@
+<form hx-post="/settings" hx-trigger="change" hx-swap="outerHTML">
+    <div>
+        <span>Mode Selection</span>
+        
+        <span class="til">(until 2026-10-22 10:30AM)</span>
+        
+    </div>
+    <fieldset>
+        <label for="auto" >Auto</label>
+        <input type="radio" autocomplete="off" id="auto" name="mode-select" value="Auto" >
+        <label for="manual" class="active">Manual</label>
+        <input type="radio" autocomplete="off" id="manual" name="mode-select" value="Manual" checked="checked">
+    </fieldset>
+    <span>Mode</span>
+    <fieldset >
+        <label for="clear" >Clear</label>
+        <input type="radio" autocomplete="off" id="clear" name="mode" value="Clear" >
+        <label for="storm" class="active">Storm</label>
+        <input type="radio" autocomplete="off" id="storm" name="mode" value="Storm" checked="checked">
+    </fieldset>
+</form>

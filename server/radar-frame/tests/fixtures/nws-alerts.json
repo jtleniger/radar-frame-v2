@@ -1,0 +1,48 @@
+{
+  "features": [
+    {
+      "properties": {
+        "event": "Tornado Warning",
+        "urgency": "Immediate",
+        "severity": "Extreme",
+        "certainty": "Observed",
+        "status": "Actual",
+        "effective": "2026-10-21T10:24:56-05:00",
+        "expires": "2026-10-21T13:34:56-05:00"
+      }
+    },
+    {
+      "properties": {
+        "event": "Severe Thunderstorm Warning",
+        "urgency": "Expected",
+        "severity": "Severe",
+        "certainty": "Likely",
+        "status": "Actual",
+        "effective": "2026-10-21T10:24:56-05:00",
+        "expires": "2026-10-21T13:34:56-05:00"
+      }
+    },
+    {
+      "properties": {
+        "event": "Flash Flood Watch",
+        "urgency": "Future",
+        "severity": "Moderate",
+        "certainty": "Possible",
+        "status": "Actual",
+        "effective": "2026-10-21T10:24:56-05:00",
+        "expires": "2026-10-22T12:24:56-05:00"
+      }
+    },
+    {
+      "properties": {
+        "event": "Wind Advisory",
+        "urgency": "Past",
+        "severity": "Minor",
+        "certainty": "Unlikely",
+        "status": "Actual",
+        "effective": "2026-10-21T10:24:56-05:00",
+        "expires": "2026-10-21T18:24:56-05:00"
+      }
+    }
+  ]
+}

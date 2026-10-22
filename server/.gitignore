@@ -7,3 +7,4 @@ radar-frame.log
 nexrad-geojson/target/
 frame-render/target/
 frame-view/target/
+radar-frame/target/

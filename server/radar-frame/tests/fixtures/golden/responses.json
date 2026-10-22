@@ -1,0 +1,11 @@
+{
+  "clear-frame": 200,
+  "clear-not-modified": 304,
+  "debug-frame": 200,
+  "index": 200,
+  "settings-auto": 200,
+  "settings-manual-no-mode": 200,
+  "settings-manual-storm": 200,
+  "storm-frame": 200,
+  "storm-not-modified": 304
+}

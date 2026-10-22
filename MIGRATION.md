@@ -20,7 +20,7 @@ stable, and lands with its own tests.
 | 2c | Manual inspection of a historical event | Volume + bbox -> radar/frame image by hand; add a `render-volume` command so no hand-chained steps or S3 "latest" logic is needed | Done: `main.py render-volume` (PR #4) |
 | 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Done: `frame-render frame` (PR #5) |
 | 3a | E-ink frame composition | `views/`, `components/info`, `components/forecast`, `components/font`, palette generation: radar/forecast images, info bar, text, icons, quantization | Done: `server/frame-view` (PR #6) |
-| 3b | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `server/`, `state/`, `modes/`, `sources/`, `setup/` | Not started |
+| 3b | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `server/`, `state/`, `modes/`, `sources/`, `setup/` | Done: `server/radar-frame` (PR #7) |
 | 3c | Deployment cutover | Remove the Python server, gunicorn, Pillow/CairoSVG/pytz dependencies, and update services/docs/CI | Not started |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
@@ -451,28 +451,97 @@ mkdir -p server/bin
 cp server/frame-view/target/release/frame-view server/bin/
 ```
 
-## Unit 3b: HTTP/state/forecast layer
+## Unit 3b: HTTP/state/forecast layer (done)
 
-Scope: `server/main.py`, `server/server/` (Flask blueprint, `/`, `/settings`,
-`/frame`), `server/modes/`, `server/state/`, `server/sources/`,
-`server/config/`, `server/setup/`.
+Replaced the Flask process with `server/radar-frame`, an axum binary that owns
+`/`, `/settings`, `/frame`, and `/static/style.css`:
 
-- Port to axum with reqwest and direct object-store HTTP (S3 listing/download),
-  preserving `/`, `/settings`, and `/frame` behavior, calling `frame-view`'s
-  library for the images.
-- Keep the schedule/state machine semantics and the forecast source selection.
-- The forecast and warning sources must keep `User-Agent` contact details and
-  only revalidate on the existing schedule; no extra polling.
-- Keep `/frame` output stable for a fixed radar volume and settings.
+- Config (`config/config.ini`, the `configparser` subset), paths, the
+  auto/manual mode schedule, the 10/30-minute intervals, and the epoch reset on
+  mode changes are ported from `config/`, `constants/`, `state/`,
+  `modes/`.
+- `sources/` keeps the same selection: Open-Meteo for current/hourly/daily, NWS
+  for alerts and radar station status. The NWS alert severity rules, the VCP
+  digit extraction, and the clear-air patterns (31/32/35) are unchanged.
+- S3 is direct HTTP: an anonymous ListObjectsV2 query for
+  `YYYY/MM/DD/<nexrad_id>` with a yesterday fallback, `_MDM` filtering, newest
+  by `LastModified`, then a GET of the selected key to
+  `data/nexrad-latest.ar2`.
+- `setup/` keeps the palette write, the street mask, the bbox stamps, and the
+  adoption rules for unstamped masks and hand-written `streets.osm` files.
+- `frame-render` and `frame-view` are called as libraries; the service starts
+  no subprocesses and stores no intermediate GeoJSON.
+- Templates are compiled into the binary with askama (the three Flask
+  templates are unchanged except for the `has_manual_til` flag that replaces
+  Jinja's `None` truthiness); the stylesheet is embedded.
+- `radar-frame` also carries the old command surface: `serve`, `setup`,
+  `render-volume`, `render-clear`, and `render-storm` (with `--mock`).
 
-Done when the Flask process is no longer part of the deployment.
+### Schedule and network
+
+`/frame` keeps the Flask contract exactly: `?debug=true` serves the current
+image, manual selection expires after one day, auto selection reads the NWS
+station on every poll and switches to Clear when the radar is down, the VCP is
+missing, or the VCP is clear-air, and the handler returns 304 until the mode's
+interval elapses. State is in-process, matching one gunicorn worker.
+
+Request count is unchanged or lower:
+
+- the three Open-Meteo calls per clear cycle are one request; current, hourly,
+  and daily are disjoint parameters of the same endpoint;
+- NWS alerts and station status stay on the existing schedule, with no extra
+  polling;
+- every request carries the contact `User-Agent` (default
+  `radar-frame (jtleniger@gmail.com)`, overridable with `[nws] user_agent`);
+  the Python Open-Meteo calls had none;
+- Overpass is contacted only when the OSM file or mask is missing or stamped
+  for another bbox.
+
+### Acceptance evidence
+
+`tests/fixtures/capture.py` runs the Flask service at a frozen clock
+(`2026-10-21T15:30:00Z`, `America/Chicago`) and records its responses. No
+network is used: NWS alerts come from `tests/fixtures/nws-alerts.json`, and the
+storm case stubs the volume download and uses the frame-render golden radar
+image. `tests/api.rs` sends the same requests through the axum router with a
+`FixedClock`:
+
+- `GET /`, the three `/settings` cases, and `/` after a manual Storm selection
+  are byte-identical to Flask, including the initial `None` timestamp and the
+  one-day `manual_til`;
+- `/frame?debug=true` returns the file unchanged;
+- `/frame` in clear-air mode (VCP 31) produces the clear frame with 0 differing
+  pixels of 384,000, then 304;
+- `/frame` in precipitation mode (VCP 212) downloads the object once, produces
+  the storm frame with 0 differing pixels of 384,000 (four active alerts across
+  all levels), then 304.
+
+End to end, on the 2013-05-20 20:59 KTLX volume and the unit 2c bbox:
+
+| Command | Result |
+|---|---|
+| `radar-frame render-volume --file data/nexrad-latest.ar2` vs `python3 main.py render-volume` | `data/nexrad-latest.png` byte-identical; `data/frame.png` 0 differing pixels of 384,000; seven palette colours |
+| `radar-frame serve --mock` (hand-written `streets.osm`, no network) | `/` 200 HTML, `/settings` 200 with the manual expiry, `/frame` 200 PNG then 304, `/frame?debug=true` 200 PNG, `/static/style.css` 200; mask and both bbox stamps written without an Overpass request |
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+`cargo test --all-targets` pass. `frame-view`'s glyph cache changed from
+`RefCell<Rc<_>>` to `Mutex<Arc<_>>` so the engine is `Sync` for axum; its
+existing goldens still report 0 differing pixels.
+
+Deliberate differences from the Flask service: malformed `/settings` values
+return 400 instead of Flask's uncaught `KeyError` 500, and `/frame` renders once
+per due interval instead of the Python storm mode's redundant second radar
+render.
 
 ## Unit 3c: Deployment cutover
 
 - Delete `server/main.py`, `server/server/`, `server/modes/`, `server/state/`,
-  `server/sources/`, `server/config/`, `server/setup/`, and
-  `server/requirements.txt` once nothing in the deployment imports them.
-- Replace the gunicorn service with the axum binary and update `README.md`.
+  `server/sources/`, `server/config/`, `server/setup/`,
+  `server/requirements.txt`, `server/views/`, `server/static/`,
+  `server/bbox.py`, and `server/states.md` once nothing in the deployment
+  imports them. The HTML templates and stylesheet now live in
+  `server/radar-frame/templates/` and `server/radar-frame/static/`.
+- Replace the gunicorn service with `radar-frame serve` and update `README.md`.
 
 ## Unit 4: Pi client
 
@@ -503,6 +572,11 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 
 cd ../frame-view
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+
+cd ../radar-frame
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
