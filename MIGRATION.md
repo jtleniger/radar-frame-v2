@@ -16,7 +16,7 @@ stable, and lands with its own tests.
 |---|------|-------|--------|
 | 1 | NEXRAD converter | Archive II -> per-elevation GeoJSON | Done: `server/nexrad-geojson` (PR #1) |
 | 2a | Frame rasterization and compositing | GeoJSON gates -> byte grid, max composite, color table, RGBA PNG, street overlay; replaces the GDAL/PIL steps in `server/components/radar/render.py` | Done: `server/frame-render` (PR #2) |
-| 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Not started |
+| 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Done: `frame-render streets` (PR #3) |
 | 2c | Manual inspection of a historical event | Volume + bbox -> radar/frame image by hand; add a `render-volume` command so no hand-chained steps or S3 "latest" logic is needed | Not started: interim commands and reference values below |
 | 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Not started |
 | 3 | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `views/`, `modes/`, `state/` | Not started |
@@ -102,21 +102,44 @@ mkdir -p server/bin
 cp server/frame-render/target/release/frame-render server/bin/
 ```
 
-GDAL and PROJ remain required only for `server/setup/streets.py` (unit 2b).
+GDAL and PROJ are no longer required for normal frame rendering (see unit 2b).
 
-## Unit 2b: Street overlay rasterization (not started)
+## Unit 2b: Street overlay rasterization (done)
 
-Scope: the GDAL calls in `server/setup/streets.py` (`gdal_rasterize` over the
-Overpass OSM line layer with `-burn 255 -ot byte -a_nodata 1`, then
-`gdal_translate` to PNG).
+Replaced the GDAL calls in `server/setup/streets.py` with the
+`frame-render streets` subcommand, one process per mask and no intermediate
+GeoTIFF:
 
-- Parse the Overpass OSM XML (`data/streets.osm`) into polylines.
+- Parse the Overpass OSM XML (`data/streets.osm`) into highway polylines,
+  filtering ways whose `highway` tag contains `motorway` or `primary`, matching
+  the Overpass query in `server/sources/osm.py`.
 - Port `GDALdllImageLine` (GDAL 3.10.3 `alg/llrasterize.cpp`) for the 0/255
   polyline mask over the same bbox and frame size.
 - Write `data/streets.png` as an 8-bit grayscale PNG, including the `tRNS`
   chunk for the nodata level that unit 2a's renderer already honours.
-- Capture a GDAL golden mask first and compare pixel by pixel.
-- Remove GDAL and PROJ from the deployment only when this lands.
+- `server/setup/streets.py` now calls `frame-render streets` instead of
+  `gdal_rasterize` and `gdal_translate`.
+
+Acceptance evidence:
+
+- `cargo test --all-targets` passes, including the golden comparison against
+  the pre-change GDAL mask: 0 differing pixels of 355200 for the fixture in
+  `server/frame-render/tests/fixtures/ktlx-mini/` (generated with GDAL 3.10.3;
+  see the README there).
+- The mask produced through the new `setup/streets.py` matches the same golden
+  with 0 differing pixels.
+
+Build and install:
+
+```sh
+cargo build --release --manifest-path server/frame-render/Cargo.toml
+mkdir -p server/bin
+cp server/frame-render/target/release/frame-render server/bin/
+```
+
+GDAL and PROJ are no longer required for the radar frame pipeline. They may
+still be present on developer workstations for regenerating goldens, but the
+server deployment no longer depends on them.
 
 ## Unit 2c: Manual inspection of a historical event (not started)
 
