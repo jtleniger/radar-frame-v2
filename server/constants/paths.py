@@ -20,4 +20,4 @@ OUTPUT_IMG = DATA_DIR / 'frame.png'
 
 BIN_DIR = Path(os.getcwd()) / 'bin'
 
-NEXRAD_JSON_BIN = BIN_DIR / 'go-nexrad-geojson'
+NEXRAD_JSON_BIN = BIN_DIR / 'nexrad-geojson'
