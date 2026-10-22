@@ -19,7 +19,9 @@ stable, and lands with its own tests.
 | 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Done: `frame-render streets` (PR #3) |
 | 2c | Manual inspection of a historical event | Volume + bbox -> radar/frame image by hand; add a `render-volume` command so no hand-chained steps or S3 "latest" logic is needed | Done: `main.py render-volume` (PR #4) |
 | 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Done: `frame-render frame` (PR #5) |
-| 3 | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `views/`, `modes/`, `state/` | Not started |
+| 3a | E-ink frame composition | `views/`, `components/info`, `components/forecast`, `components/font`, palette generation: radar/forecast images, info bar, text, icons, quantization | Done: `server/frame-view` (PR #6) |
+| 3b | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `server/`, `state/`, `modes/`, `sources/`, `setup/` | Not started |
+| 3c | Deployment cutover | Remove the Python server, gunicorn, Pillow/CairoSVG/pytz dependencies, and update services/docs/CI | Not started |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
 
@@ -216,8 +218,8 @@ The same `[bbox]` drives both the radar frame and the OSM street mask, so the
 streets are fetched for exactly this area.
 
 All commands from `server/`. Requires the built binaries and the Python
-requirements (Pillow, pytz, requests; boto3 and Flask only for the server
-commands).
+requirements (requests for the street download; boto3 and Flask only for the
+server commands).
 
 ```sh
 cargo build --release --manifest-path nexrad-geojson/Cargo.toml
@@ -292,8 +294,8 @@ refused (see below), and `render-volume` adopted it without a refetch.
 
 ### Known rough edges
 
-- `render-volume` still needs `pytz` for the info-bar timestamp (via
-  `components.info`); it does not need Flask or boto3.
+- `render-volume` needed `pytz` for the info-bar timestamp until unit 3a moved
+  the info bar into `frame-view`; it never needed Flask or boto3.
 - The Overpass API is rate limited and rejects automated clients with 4xx
   (406 from `overpass-api.de` was observed). If the download fails, write the
   query output to `data/streets.osm` yourself, delete `data/streets.png` (and
@@ -377,21 +379,100 @@ path removes 68 MB of per-frame disk traffic, the second process, and the
 write-then-reparse dependency on the JSON layout; peak RSS rises ~1 MiB because
 the decoded volume and the frame grids coexist.
 
-Known rough edge: `main.py render-volume` still imports `pytz` through
-`views.storm`, as noted in unit 2c; that is unrelated to the frame path.
+Unit 3a moved the info bar into `frame-view`, so `render-volume` no longer
+imports `pytz`; that rough edge from units 2c/2d is gone.
 
 ## Unit 3: HTTP/state/forecast layer
 
+Unit 3 is split so each pass replaces a working part end to end:
+
+- 3a: the e-ink image composition (this pass).
+- 3b: the Flask/state/forecast/setup layer in axum.
+- 3c: remove the remaining Python server deployment and its dependencies.
+
+## Unit 3a: E-ink frame composition (done)
+
+Replaced the Pillow and CairoSVG rendering with the local crate
+`server/frame-view`:
+
+- `storm`: the radar frame, the info bar (update time plus the summarised
+  active alert), and Floyd–Steinberg quantization to the seven-colour palette.
+- `clear`: current conditions, every-other-hour hourly forecast, three daily
+  forecasts, the column rules, and the info bar, quantized without dithering.
+- `palette`: the 7x1 indexed palette PNG, replacing `setup/palette.py`'s
+  Pillow code.
+- Spleen OTF fonts and the 17 Weather Icons SVGs the code mapping uses are
+  embedded in the binary. Text is rasterized in monochrome mode with ab_glyph;
+  icons are rasterized with resvg and reduced to black vs transparent.
+- `views/storm.py` and `views/clear.py` keep their signatures and now serialize
+  their inputs to JSON on the binary's stdin. Nothing else in the Flask server
+  changed, so the image step is replaced without touching `/`, `/settings`, or
+  `/frame`.
+- Pillow and CairoSVG are no longer used by the server (they were removed from
+  `requirements.txt`); `pytz`, Flask, boto3, and gunicorn remain for 3b.
+
+### Interface
+
+```sh
+frame-view storm --radar data/nexrad-latest.png --palette data/palette.png \
+  --output data/frame.png --timezone America/Chicago [--now <rfc3339>] < alerts.json
+frame-view clear --palette data/palette.png --output data/frame.png \
+  --timezone <zone> [--now <rfc3339>] < forecast.json
+frame-view palette --output data/palette.png
+```
+
+Alerts are `{event, level, status, effective, expires}`; the clear input also
+carries `current`, `hourly`, and `daily`. `--now` exists for fixtures.
+
+### Acceptance evidence
+
+- `cargo test --all-targets` passes in `server/frame-view`.
+- Goldens in `server/frame-view/tests/fixtures/` were generated by the Python
+  views at `202792a` with Pillow 11.1.0 and CairoSVG 2.9.1 (see the README
+  there). At a fixed time and time zone:
+  - the info bar is pixel-identical (0 differing pixels of 28,800) in both
+    views, including alert text and the timestamp;
+  - the clear frame is 99.31% pixel-identical; all differences are edge pixels
+    of the resvg-rendered icons;
+  - the storm frame's dither phase differs (41.0% identical) because the
+    diffusion implementation is not Pillow's; the mean absolute difference of
+    8x8 block averages is 3.4/255, so the image is visually indistinguishable.
+- `python3 main.py setup`, `render-volume --file data/nexrad-latest.ar2`, and
+  `render-clear --mock` write 800x480 seven-colour frames through the new
+  binary; the Flask test client serves `/`, `/settings`, and
+  `/frame?debug=true`.
+- `python3 -m compileall -q server` passes.
+
+Build and install:
+
+```sh
+cargo build --release --manifest-path server/frame-view/Cargo.toml
+mkdir -p server/bin
+cp server/frame-view/target/release/frame-view server/bin/
+```
+
+## Unit 3b: HTTP/state/forecast layer
+
 Scope: `server/main.py`, `server/server/` (Flask blueprint, `/`, `/settings`,
-`/frame`), `server/views/`, `server/modes/`, `server/state/`, `server/sources/`,
-`server/config/`, `server/components/`.
+`/frame`), `server/modes/`, `server/state/`, `server/sources/`,
+`server/config/`, `server/setup/`.
 
 - Port to axum with reqwest and direct object-store HTTP (S3 listing/download),
-  preserving `/`, `/settings`, and `/frame` behavior.
+  preserving `/`, `/settings`, and `/frame` behavior, calling `frame-view`'s
+  library for the images.
 - Keep the schedule/state machine semantics and the forecast source selection.
-- Keep `/frame` output bytes stable for a fixed radar volume and settings.
+- The forecast and warning sources must keep `User-Agent` contact details and
+  only revalidate on the existing schedule; no extra polling.
+- Keep `/frame` output stable for a fixed radar volume and settings.
 
 Done when the Flask process is no longer part of the deployment.
+
+## Unit 3c: Deployment cutover
+
+- Delete `server/main.py`, `server/server/`, `server/modes/`, `server/state/`,
+  `server/sources/`, `server/config/`, `server/setup/`, and
+  `server/requirements.txt` once nothing in the deployment imports them.
+- Replace the gunicorn service with the axum binary and update `README.md`.
 
 ## Unit 4: Pi client
 
@@ -421,9 +502,15 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 
+cd ../frame-view
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+
 cd ..
 mkdir -p bin
 cp nexrad-geojson/target/release/nexrad-geojson bin/
 cp frame-render/target/release/frame-render bin/
+cp frame-view/target/release/frame-view bin/
 python3 -m compileall -q .
 ```
