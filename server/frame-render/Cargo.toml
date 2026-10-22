@@ -1,0 +1,17 @@
+[package]
+name = "frame-render"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+description = "Rasterize NEXRAD GeoJSON gates into the radar frame PNG"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+png = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+png = "0.18"
+tempfile = "3"

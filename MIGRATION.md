@@ -15,7 +15,8 @@ stable, and lands with its own tests.
 | # | Unit | Scope | Status |
 |---|------|-------|--------|
 | 1 | NEXRAD converter | Archive II -> per-elevation GeoJSON | Done: `server/nexrad-geojson` (PR #1) |
-| 2 | Rasterization and compositing | `gdal_rasterize`, `gdal_calc.py`, `gdaldem`, `gdal_translate`, PIL compositing | Not started |
+| 2a | Frame rasterization and compositing | GeoJSON gates -> byte grid, max composite, color table, RGBA PNG, street overlay; replaces the GDAL/PIL steps in `server/components/radar/render.py` | Done: `server/frame-render` (PR #N) |
+| 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Not started |
 | 3 | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `views/`, `modes/`, `state/` | Not started |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
@@ -61,26 +62,59 @@ mkdir -p server/bin
 cp server/nexrad-geojson/target/release/nexrad-geojson server/bin/
 ```
 
-## Unit 2: Rasterization and compositing
+## Unit 2a: Frame rasterization and compositing (done)
 
-Scope: `server/components/radar/render.py` (rasterize, composite, colorize,
-translate, PIL paste) and the GDAL calls in `server/setup/streets.py`.
+Replaced the GDAL and PIL steps of `server/components/radar/render.py` with the
+local crate `server/frame-render`, one process per frame and no intermediate
+GeoTIFFs:
 
-- Rasterize GeoJSON gates into a `radar.WIDTH` x `radar.HEIGHT` byte grid over
-  the configured bbox, replacing `gdal_rasterize`.
-- Max-composite elevations 1-3, replacing `gdal_calc.py`.
-- Apply `server/gdal-colors.txt` with nearest-color-entry and alpha, replacing
+- GeoJSON gates -> `radar.WIDTH` x `radar.HEIGHT` byte grid over the configured
+  bbox, replacing three `gdal_rasterize` runs. The input GeoJSON and the output
+  grid share the WGS84 lon/lat frame, so only the affine geotransform is
+  applied; the polygon scanline fill is a port of `GDALdllImageFilledPolygon`.
+- Max composite of elevations 1-3, replacing `gdal_calc.py` (including its Byte
+  nodata default of 255, which is what the uncovered background pixels are).
+- `server/gdal-colors.txt` with nearest-color-entry lookup and alpha, replacing
   `gdaldem color-relief`.
-- Emit the frame raster (and any intermediate GeoTIFF still consumed
-  downstream), replacing `gdal_translate`.
-- Composite the radar over streets in that order, replacing the PIL paste.
+- RGBA PNG output, replacing `gdal_translate`.
+- Street mask overlay, replacing the two Pillow `paste` calls (bit-identical
+  including Pillow's `+127` integer blend and `tRNS` handling).
 
-Before deleting GDAL, capture golden frames: rasterized per-elevation grids, the
-composited grid, and the final PNG for a fixed volume, so the Rust
-implementation can be compared pixel by pixel.
+Acceptance evidence:
 
-Done when the Python render path and host GDAL/PROJ packages are removed from
-the deployment.
+- `cargo test --all-targets` passes, including the golden comparison against the
+  pre-change GDAL/PIL renderer: 0 differing pixels of 355200 for the fixture in
+  `server/frame-render/tests/fixtures/ktlx-mini/` (generated with GDAL 3.10.3
+  and Pillow 11.1.0; see the README there).
+- The same frame rendered through the new `render.py` matches the same golden
+  with 0 differing pixels.
+- Rasterization was additionally compared against `gdal_rasterize` for 4000
+  random polygons and 300 polygons with interior rings and fractional values
+  (10.4 / 10.5 / 41.4 / 254.5 / 300): 0 differing pixels.
+
+Build and install:
+
+```sh
+cargo build --release --manifest-path server/frame-render/Cargo.toml
+mkdir -p server/bin
+cp server/frame-render/target/release/frame-render server/bin/
+```
+
+GDAL and PROJ remain required only for `server/setup/streets.py` (unit 2b).
+
+## Unit 2b: Street overlay rasterization (not started)
+
+Scope: the GDAL calls in `server/setup/streets.py` (`gdal_rasterize` over the
+Overpass OSM line layer with `-burn 255 -ot byte -a_nodata 1`, then
+`gdal_translate` to PNG).
+
+- Parse the Overpass OSM XML (`data/streets.osm`) into polylines.
+- Port `GDALdllImageLine` (GDAL 3.10.3 `alg/llrasterize.cpp`) for the 0/255
+  polyline mask over the same bbox and frame size.
+- Write `data/streets.png` as an 8-bit grayscale PNG, including the `tRNS`
+  chunk for the nodata level that unit 2a's renderer already honours.
+- Capture a GDAL golden mask first and compare pixel by pixel.
+- Remove GDAL and PROJ from the deployment only when this lands.
 
 ## Unit 3: HTTP/state/forecast layer
 
@@ -118,8 +152,14 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 
+cd ../frame-render
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+
 cd ..
 mkdir -p bin
 cp nexrad-geojson/target/release/nexrad-geojson bin/
+cp frame-render/target/release/frame-render bin/
 python3 -m compileall -q .
 ```
