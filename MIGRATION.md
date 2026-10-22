@@ -15,7 +15,7 @@ stable, and lands with its own tests.
 | # | Unit | Scope | Status |
 |---|------|-------|--------|
 | 1 | NEXRAD converter | Archive II -> per-elevation GeoJSON | Done: `server/nexrad-geojson` (PR #1) |
-| 2a | Frame rasterization and compositing | GeoJSON gates -> byte grid, max composite, color table, RGBA PNG, street overlay; replaces the GDAL/PIL steps in `server/components/radar/render.py` | Done: `server/frame-render` (PR #N) |
+| 2a | Frame rasterization and compositing | GeoJSON gates -> byte grid, max composite, color table, RGBA PNG, street overlay; replaces the GDAL/PIL steps in `server/components/radar/render.py` | Done: `server/frame-render` (PR #2) |
 | 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Not started |
 | 3 | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `views/`, `modes/`, `state/` | Not started |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
