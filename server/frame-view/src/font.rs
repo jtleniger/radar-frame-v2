@@ -1,5 +1,5 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 
@@ -65,7 +65,7 @@ struct Glyph {
 pub struct Fonts {
     spleen16: FontVec,
     spleen32: FontVec,
-    glyphs: RefCell<HashMap<(Size, char), std::rc::Rc<Glyph>>>,
+    glyphs: Mutex<HashMap<(Size, char), Arc<Glyph>>>,
 }
 
 impl Fonts {
@@ -75,7 +75,7 @@ impl Fonts {
                 .expect("embedded spleen-16x32 font is valid"),
             spleen32: FontVec::try_from_vec(SPLEEN_32X64.to_vec())
                 .expect("embedded spleen-32x64 font is valid"),
-            glyphs: RefCell::new(HashMap::new()),
+            glyphs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -86,9 +86,9 @@ impl Fonts {
         }
     }
 
-    fn glyph(&self, size: Size, ch: char) -> std::rc::Rc<Glyph> {
-        if let Some(glyph) = self.glyphs.borrow().get(&(size, ch)) {
-            return glyph.clone();
+    fn glyph(&self, size: Size, ch: char) -> Arc<Glyph> {
+        if let Some(glyph) = self.glyphs.lock().unwrap().get(&(size, ch)) {
+            return Arc::clone(glyph);
         }
 
         let face = self.font(size.face());
@@ -121,7 +121,7 @@ impl Fonts {
             None => (0, 0, 0, 0, Vec::new()),
         };
 
-        let glyph = std::rc::Rc::new(Glyph {
+        let glyph = Arc::new(Glyph {
             advance,
             left,
             top,
@@ -129,7 +129,10 @@ impl Fonts {
             height,
             mask,
         });
-        self.glyphs.borrow_mut().insert((size, ch), glyph.clone());
+        self.glyphs
+            .lock()
+            .unwrap()
+            .insert((size, ch), Arc::clone(&glyph));
         glyph
     }
 

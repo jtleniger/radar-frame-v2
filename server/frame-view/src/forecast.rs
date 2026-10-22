@@ -1,21 +1,21 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct CurrentConditions {
     pub temp_f: f64,
     pub code: i32,
     pub is_day: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ForecastHour {
     pub hour: String,
     pub temp_f: f64,
     pub code: i32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ForecastDay {
     pub day: String,
     pub high_f: f64,
@@ -33,7 +33,7 @@ pub enum AlertLevel {
     Emergency,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Alert {
     pub event: String,
     pub level: AlertLevel,
@@ -50,7 +50,7 @@ impl Alert {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ClearInput {
     pub current: CurrentConditions,
     pub hourly: Vec<ForecastHour>,
