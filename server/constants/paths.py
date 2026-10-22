@@ -20,5 +20,6 @@ OUTPUT_IMG = DATA_DIR / 'frame.png'
 BIN_DIR = Path(os.getcwd()) / 'bin'
 
 FRAME_RENDER_BIN = BIN_DIR / 'frame-render'
+FRAME_VIEW_BIN = BIN_DIR / 'frame-view'
 
 COLORS_FILE = Path(os.getcwd()) / 'gdal-colors.txt'

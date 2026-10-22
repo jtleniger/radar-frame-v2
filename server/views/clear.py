@@ -1,10 +1,8 @@
-from PIL import Image, ImageDraw
 from typing import List
 
+from constants import paths
 from sources import forecast
-from components.forecast import components
-from components.info import info
-from constants import paths, frame, colors
+from views import frame_view
 
 
 def render(
@@ -12,32 +10,24 @@ def render(
         hourly: List[forecast.ForecastHour],
         daily: List[forecast.ForecastDay],
         alerts: List[forecast.Alert]):
-    
-    image = Image.new("RGB", (frame.WIDTH, frame.HEIGHT), "#FFF") # type: ignore
-
-    draw = ImageDraw.Draw(image)
-
-    current_img = components.current_conditions(current)
-    image.paste(current_img, (0, 0))
-
-    hourly_img = components.hourly_forecast(hourly)
-    image.paste(hourly_img, (frame.WIDTH_1_3, 0))
- 
-    daily_img = components.daily_forecast(daily)
-    image.paste(daily_img, (2 * frame.WIDTH_1_3, 0))
-
-    info_img = info.render(alerts)
-    image.paste(info_img, (0, frame.HEIGHT_LESS_INFO))
-
-    draw.line(
-        ((frame.WIDTH_1_3, 20), (frame.WIDTH_1_3, frame.HEIGHT_LESS_INFO - 20)),
-        colors.BLACK, 2)
-    
-    draw.line(
-        ((2 * frame.WIDTH_1_3, 20), (2 * frame.WIDTH_1_3, frame.HEIGHT_LESS_INFO - 20)),
-        colors.BLACK, 2)
-
-    palette = Image.open(paths.PALETTE_IMG)
-    image = image.quantize(7, palette=palette, dither=Image.Dither.NONE)
-
-    image.save(paths.OUTPUT_IMG)
+    """Current, hourly, and daily forecast panels composed by frame-view."""
+    frame_view.run(
+        'clear',
+        {
+            'current': {
+                'temp_f': current.temp_f,
+                'code': current.code,
+                'is_day': current.is_day,
+            },
+            'hourly': [
+                {'hour': h.hour, 'temp_f': h.temp_f, 'code': h.code}
+                for h in hourly
+            ],
+            'daily': [
+                {'day': d.day, 'high_f': d.high_f, 'low_f': d.low_f, 'code': d.code}
+                for d in daily
+            ],
+            'alerts': [frame_view.alert(a) for a in alerts],
+        },
+        paths.OUTPUT_IMG,
+    )
