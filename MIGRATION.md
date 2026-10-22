@@ -17,7 +17,7 @@ stable, and lands with its own tests.
 | 1 | NEXRAD converter | Archive II -> per-elevation GeoJSON | Done: `server/nexrad-geojson` (PR #1) |
 | 2a | Frame rasterization and compositing | GeoJSON gates -> byte grid, max composite, color table, RGBA PNG, street overlay; replaces the GDAL/PIL steps in `server/components/radar/render.py` | Done: `server/frame-render` (PR #2) |
 | 2b | Street overlay rasterization | OSM XML -> 8-bit grayscale mask; replaces the GDAL calls in `server/setup/streets.py` | Done: `frame-render streets` (PR #3) |
-| 2c | Manual inspection of a historical event | Volume + bbox -> radar/frame image by hand; add a `render-volume` command so no hand-chained steps or S3 "latest" logic is needed | Not started: interim commands and reference values below |
+| 2c | Manual inspection of a historical event | Volume + bbox -> radar/frame image by hand; add a `render-volume` command so no hand-chained steps or S3 "latest" logic is needed | Done: `main.py render-volume` (PR #4) |
 | 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Not started |
 | 3 | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `views/`, `modes/`, `state/` | Not started |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
@@ -141,32 +141,54 @@ GDAL and PROJ are no longer required for the radar frame pipeline. They may
 still be present on developer workstations for regenerating goldens, but the
 server deployment no longer depends on them.
 
-## Unit 2c: Manual inspection of a historical event (not started)
+## Unit 2c: Manual inspection of a historical event (done)
 
 Goal: be able to point the pipeline at any past volume and inspect the resulting
 radar/frame image by hand, without the server, the NWS forecast stack, or
 credentials.
 
-Today that needs four hand-chained steps, because `modes/storm.py` always pulls
-whatever S3 reports as latest and `main.py render-storm` goes through it. The
-interim commands below work as-is; the unit is done when they are a command.
+### Command
 
-### CLI to add
+```sh
+python3 main.py render-volume --file <path.ar2> [--minimum 10] [--force-streets]
+```
 
-- `main.py render-volume --file <path.ar2>` (or a `render-frame` command) that
-  runs converter -> `frame-render` -> `views.storm.render([])` for a local
-  volume, skipping `nexrad_level2.latest_object()`, `boto3` and the forecast
-  providers. `views.storm.render` needs `pytz` (via `components.info`, for the
-  timestamp on the info bar), so inspecting an image currently pulls in a
-  dependency the radar path itself does not need.
-- A way to regenerate `data/streets.png` when `[bbox]` changes: today
-  `setup/streets.create()` returns early whenever the PNG exists, so a stale
-  mask keeps the old geography. Either a `setup --force-streets` flag or a bbox
-  stamp next to the mask.
-- Optional: `nexrad-geojson` / `frame-render` need no changes for this; both
-  already take explicit paths.
+`render-volume` runs the same three steps as a server frame render, but from a
+local file: `bin/nexrad-geojson --minimum <n> -e 1-3 -p REF`,
+`bin/frame-render radar` over the configured `[bbox]`, then
+`views.storm.render([])` for the info bar and 7-colour quantization. It skips
+`nexrad_level2.latest_object()`, `boto3`, and the forecast providers; `main.py`
+imports Flask, boto3, and the sources only inside the commands that use them.
+It writes `data/nexrad-latest-REF-{1,2,3}.json`, `data/nexrad-latest.png`, and
+`data/frame.png`, and prints the two image paths. `--file` may be
+gzip-compressed.
 
-### Interim steps (work today)
+### Street mask and `[bbox]` changes
+
+`setup/streets.py` writes `data/streets.bbox` and `data/streets.osm.bbox` with
+the bounds each artifact was built for, so `create()` no longer returns early
+whenever the PNG exists:
+
+- mask current for `[bbox]` -> no-op;
+- mask generated for another bbox -> re-rasterize, and re-download
+  `data/streets.osm` when that file is missing or was fetched for another bbox;
+- masks and OSM files from before the stamps existed are adopted with a warning
+  (no network on upgrade). Run `main.py setup --force-streets` once to have the
+  geography downloaded and verified again.
+
+`--force-streets` (on `setup` and `render-volume`) re-downloads and
+re-rasterizes even when the stamps match. `render-volume` calls `create()`
+first, so a missing or stale mask is rebuilt before rendering.
+
+Evidence, in an isolated cwd with the unit 2b fixture bounds: a hand-written
+`data/streets.osm` with no mask is used and stamped; a second run is a no-op;
+changing `[bbox]` re-downloads the OSM and regenerates the mask; and
+`--force-streets` re-downloads even when the stamps match. The mask generated
+for the fixture bounds is pixel-identical to
+`frame-render/tests/fixtures/ktlx-mini/streets.png` (0 differing pixels of
+355,200).
+
+### Manual steps (what the command replaces)
 
 A reference event: the **2013 Moore EF5 tornado**, observed by KTLX (Oklahoma
 City) at 20:59:14Z on 2013-05-20, a few minutes after touchdown.
@@ -191,9 +213,9 @@ max_lon = -97.15
 The same `[bbox]` drives both the radar frame and the OSM street mask, so the
 streets are fetched for exactly this area.
 
-All commands from `server/`. Requires `gdal-bin` (still needed for
-`setup/streets.py` until 2b) and the Python requirements (Pillow, requests;
-Flask/pytz/boto3 only for `main.py` and `views/`).
+All commands from `server/`. Requires the built binaries and the Python
+requirements (Pillow, pytz, requests; boto3 and Flask only for the server
+commands).
 
 ```sh
 cargo build --release --manifest-path nexrad-geojson/Cargo.toml
@@ -207,10 +229,7 @@ cp frame-render/target/release/frame-render bin/
 #    (The example file ships placeholder bounds that are not a valid bbox, and
 #    frame-render rejects a zero-height one.)
 
-# 2. street mask + palette for that bbox. Delete stale artifacts first: the
-#    mask is generated once and then reused even if the bbox changed, which
-#    would silently keep the old geography.
-rm -f data/streets.osm data/streets.tif data/streets.png
+# 2. street mask + palette for that bbox (no-op when the mask stamp matches)
 python3 main.py setup
 
 # 3. the event volume (objects from this era are gzip-compressed)
@@ -251,12 +270,13 @@ print('e-ink frame', img.size, img.mode)
 PY
 ```
 
-Reference values for this volume and bbox, measured while writing this entry:
-800x444; 146,670 covered pixels of 355,200; 22,414 pixels at 41 dBZ or more;
-KTLX is a background-coloured 9x9 hole around `(654, 204)` (its cone of
-silence). Steps 3-5 were run to get these; step 2's Overpass fetch was refused
-(see below), so the frame used an empty mask. Step 6's quantization was checked
-separately with the same `quantize(7, palette=...)` call.
+Reference values for this volume and bbox: 800x444; 146,670 covered pixels of
+355,200; 22,414 pixels at 41 dBZ or more; KTLX is a background-coloured 9x9
+hole around `(654, 204)` (its cone of silence). `main.py render-volume --file
+data/nexrad-latest.ar2` reproduces them exactly; its `data/nexrad-latest.png`
+is byte-identical (SHA-256 `a823e49a...`) to the image the manual steps
+produced. The mask for this bbox is empty because the Overpass fetch was
+refused (see below), and `render-volume` adopted it without a refetch.
 
 - The supercell reads as a bow of intense returns sweeping south-west to
   north-east across the upper half of the frame, with the hook wrapping toward
@@ -270,14 +290,13 @@ separately with the same `quantize(7, palette=...)` call.
 
 ### Known rough edges
 
-- `main.py setup` imports Flask; with only Pillow and requests installed, use
-  `python3 -c 'from setup import palette; palette.create()'` and
-  `python3 -c 'from setup import streets; streets.create()'` instead.
-  `views.storm.render` additionally needs `pytz`.
+- `render-volume` still needs `pytz` for the info-bar timestamp (via
+  `components.info`); it does not need Flask or boto3.
 - The Overpass API is rate limited and rejects automated clients with 4xx
-  (406 from `overpass-api.de` was observed while writing this). If the download
-  fails, write the query output to `data/streets.osm` yourself - `create()`
-  skips fetching when that file exists - and re-run step 2:
+  (406 from `overpass-api.de` was observed). If the download fails, write the
+  query output to `data/streets.osm` yourself, delete `data/streets.png` (and
+  `data/streets.bbox`) if a mask already exists, and re-run `main.py setup`.
+  The hand-written file is then adopted for the current bbox and stamped:
 
   ```
   [out:xml];
