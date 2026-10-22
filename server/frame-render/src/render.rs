@@ -1,4 +1,5 @@
-//! The radar frame pipeline: GeoJSON gates -> composite grid -> RGBA PNG.
+//! The radar frame pipeline: GeoJSON or Archive II gates -> composite grid ->
+//! RGBA PNG.
 
 use std::path::{Path, PathBuf};
 
@@ -55,50 +56,34 @@ struct Properties {
 
 /// Rasterize elevations 1-3, max-composite them, colorize, overlay streets.
 pub fn render_radar(options: &Options) -> Result<()> {
-    let colors_text = std::fs::read_to_string(&options.colors)
-        .map_err(|e| Error(format!("{}: {e}", options.colors.display())))?;
-    let table = ColorTable::parse(&colors_text)
-        .map_err(|e| Error(format!("{}: {e}", options.colors.display())))?;
-
-    let streets = pngio::read_gray8(&options.streets)?;
-    if (streets.width, streets.height) != (options.width, options.height) {
-        return Err(Error(format!(
-            "{}: street mask is {}x{}, frame is {}x{}",
-            options.streets.display(),
-            streets.width,
-            streets.height,
-            options.width,
-            options.height
-        )));
-    }
-
-    let transform = Transform::new(
-        options.min_lon,
-        options.min_lat,
-        options.max_lon,
-        options.max_lat,
-        options.width,
-        options.height,
+    let (transform, streets, table) = load_frame(
+        &Bounds {
+            min_lon: options.min_lon,
+            min_lat: options.min_lat,
+            max_lon: options.max_lon,
+            max_lat: options.max_lat,
+            width: options.width,
+            height: options.height,
+        },
+        &options.colors,
+        &options.streets,
     )?;
 
-    // gdal_calc.py: numpy.max((A, B, C), axis=0), with the nodata propagation
-    // that turns uncovered pixels into COMPOSITE_NODATA.
     let mut composite = vec![0u8; options.width * options.height];
     for elevation in 1..=3 {
         let path = elevation_path(&options.input, elevation);
         let grid = rasterize_file(&path, &transform, options.width, options.height)?;
-        for (slot, value) in composite.iter_mut().zip(grid) {
-            *slot = (*slot).max(value);
-        }
-    }
-    for value in &mut composite {
-        if *value == 0 {
-            *value = COMPOSITE_NODATA;
-        }
+        merge(&mut composite, &grid);
     }
 
-    let rgba = compose(&composite, &streets, &table.lut());
-    pngio::write_rgba(&options.output, options.width, options.height, &rgba)
+    write_composite(
+        &mut composite,
+        &streets,
+        &table,
+        options.width,
+        options.height,
+        &options.output,
+    )
 }
 
 fn elevation_path(base: &Path, elevation: u8) -> PathBuf {
@@ -142,6 +127,80 @@ fn rasterize_file(
         );
     }
     Ok(grid)
+}
+
+/// Frame extent and pixel size, shared by both entry points.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Bounds {
+    pub min_lon: f64,
+    pub min_lat: f64,
+    pub max_lon: f64,
+    pub max_lat: f64,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Read the color table and street mask and build the geotransform; shared by
+/// the GeoJSON (`radar`) and Archive II (`frame`) paths.
+pub(crate) fn load_frame(
+    bounds: &Bounds,
+    colors: &Path,
+    streets_path: &Path,
+) -> Result<(Transform, pngio::Gray8, ColorTable)> {
+    let colors_text =
+        std::fs::read_to_string(colors).map_err(|e| Error(format!("{}: {e}", colors.display())))?;
+    let table =
+        ColorTable::parse(&colors_text).map_err(|e| Error(format!("{}: {e}", colors.display())))?;
+
+    let streets = pngio::read_gray8(streets_path)?;
+    if (streets.width, streets.height) != (bounds.width, bounds.height) {
+        return Err(Error(format!(
+            "{}: street mask is {}x{}, frame is {}x{}",
+            streets_path.display(),
+            streets.width,
+            streets.height,
+            bounds.width,
+            bounds.height
+        )));
+    }
+
+    let transform = Transform::new(
+        bounds.min_lon,
+        bounds.min_lat,
+        bounds.max_lon,
+        bounds.max_lat,
+        bounds.width,
+        bounds.height,
+    )?;
+
+    Ok((transform, streets, table))
+}
+
+/// `gdal_calc.py`'s `numpy.max((A, B, C), axis=0)` over the elevation grids.
+pub(crate) fn merge(composite: &mut [u8], grid: &[u8]) {
+    for (slot, value) in composite.iter_mut().zip(grid) {
+        *slot = (*slot).max(*value);
+    }
+}
+
+/// Uncovered pixels become the composite nodata, then colorize, overlay the
+/// street mask, and write the RGBA PNG.
+pub(crate) fn write_composite(
+    composite: &mut [u8],
+    streets: &pngio::Gray8,
+    table: &ColorTable,
+    width: usize,
+    height: usize,
+    output: &Path,
+) -> Result<()> {
+    for value in composite.iter_mut() {
+        if *value == 0 {
+            *value = COMPOSITE_NODATA;
+        }
+    }
+
+    let rgba = compose(composite, streets, &table.lut());
+    pngio::write_rgba(output, width, height, &rgba)
 }
 
 /// Pixels the way the old PIL sequence produced them: the colorized radar
@@ -195,5 +254,12 @@ mod tests {
         assert_eq!(blend(255, 1, 1), 254);
         assert_eq!(blend(17, 255, 255), 255);
         assert_eq!(blend(17, 0, 0), 17);
+    }
+
+    #[test]
+    fn merge_keeps_the_highest_elevation_value() {
+        let mut composite = vec![0, 20, 10, 30];
+        merge(&mut composite, &[41, 10, 30, 30]);
+        assert_eq!(composite, vec![41, 20, 30, 30]);
     }
 }

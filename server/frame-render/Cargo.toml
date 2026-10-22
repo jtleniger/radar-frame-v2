@@ -8,6 +8,7 @@ description = "Rasterize NEXRAD GeoJSON gates into the radar frame PNG"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+nexrad-geojson = { path = "../nexrad-geojson" }
 png = "0.18"
 quick-xml = "0.37"
 serde = { version = "1", features = ["derive"] }
