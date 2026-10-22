@@ -44,7 +44,7 @@ lon = -97.23
 timezone = America/Chicago
 
 [nws]
-user_agent = radar-frame (jtleniger@gmail.com)
+user_agent = radar-frame (test@example.com)
 zone = OKZ025
 fire_zone = OKZ025
 ";

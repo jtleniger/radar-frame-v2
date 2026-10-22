@@ -30,10 +30,10 @@ It binds `0.0.0.0:8000` and writes `radar-frame.log` in the working directory.
 `--mock` uses the built-in forecast data. The Python `main.py` entry point and
 gunicorn service remain only until the unit 3c cutover.
 
-All outbound requests (Open-Meteo, NWS, S3, Overpass) carry the contact
-`User-Agent` from `[nws] user_agent` (default
-`radar-frame (jtleniger@gmail.com)`), and forecast data is fetched once per
-scheduled update.
+All outbound requests (Open-Meteo, NWS, S3, Overpass) carry the `User-Agent`
+from `[nws] user_agent`; set it to a contact address, as the NWS API asks. When
+the setting is missing the generic `radar-frame` value is used. Forecast data
+is fetched once per scheduled update.
 
 ### Inspecting a historical volume
 

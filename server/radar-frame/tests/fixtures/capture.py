@@ -49,7 +49,7 @@ lon = -97.23
 timezone = {TIMEZONE}
 
 [nws]
-user_agent = radar-frame (jtleniger@gmail.com)
+user_agent = radar-frame (test@example.com)
 zone = OKZ025
 fire_zone = OKZ025
 """
@@ -73,7 +73,7 @@ class FakeRequests:
 
     def get(self, url, headers=None):
         self.calls += 1
-        assert "jtleniger@gmail.com" in headers["User-Agent"], headers
+        assert headers["User-Agent"].startswith("radar-frame"), headers
         return FakeResponse(self.body)
 
 

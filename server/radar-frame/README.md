@@ -57,8 +57,9 @@ contract:
 - Overpass: only when `data/streets.osm` or the mask is missing or stale for
   `[bbox]`; a hand-written OSM file is adopted without a request.
 
-Every outbound request uses a `User-Agent` containing the contact address from
-`[nws] user_agent` (default `radar-frame (jtleniger@gmail.com)`).
+Every outbound request uses the `User-Agent` from `[nws] user_agent`; set it to
+a contact address, as the NWS API asks. Without the setting the generic
+`radar-frame` value is used.
 
 The radar station response is parsed on every `/frame` poll rather than cached,
 which is the schedule the Flask service used.

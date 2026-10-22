@@ -491,9 +491,9 @@ Request count is unchanged or lower:
   and daily are disjoint parameters of the same endpoint;
 - NWS alerts and station status stay on the existing schedule, with no extra
   polling;
-- every request carries the contact `User-Agent` (default
-  `radar-frame (jtleniger@gmail.com)`, overridable with `[nws] user_agent`);
-  the Python Open-Meteo calls had none;
+- every request carries the `User-Agent` from `[nws] user_agent` (set it to a
+  contact address; without it the generic `radar-frame` is used), and the
+  Python Open-Meteo calls now carry it too;
 - Overpass is contacted only when the OSM file or mask is missing or stamped
   for another bbox.
 

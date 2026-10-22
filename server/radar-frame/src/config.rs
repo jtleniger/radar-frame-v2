@@ -12,9 +12,10 @@ use chrono_tz::Tz;
 
 use crate::error::{Error, Result};
 
-/// Contact address sent in every outbound `User-Agent` unless the settings
-/// file overrides `[nws] user_agent`.
-pub const DEFAULT_USER_AGENT: &str = "radar-frame (jtleniger@gmail.com)";
+/// `User-Agent` sent when the settings file has no `[nws] user_agent`. The
+/// example settings file provides a contact placeholder; the NWS API asks for
+/// one.
+pub const DEFAULT_USER_AGENT: &str = "radar-frame";
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -165,9 +166,11 @@ user_agent = (someone@example.com)
     }
 
     #[test]
-    fn user_agent_defaults_to_the_contact_address() {
-        let config = Config::parse("[radar]\nnexrad_id = KTLX\n").unwrap();
-        assert_eq!(config.user_agent(), DEFAULT_USER_AGENT);
-        assert!(config.user_agent().contains("jtleniger@gmail.com"));
+    fn user_agent_defaults_and_can_be_overridden() {
+        let default = Config::parse("[radar]\nnexrad_id = KTLX\n").unwrap();
+        assert_eq!(default.user_agent(), "radar-frame");
+
+        let configured = Config::parse("[nws]\nuser_agent = (contact@example.com)\n").unwrap();
+        assert_eq!(configured.user_agent(), "(contact@example.com)");
     }
 }
