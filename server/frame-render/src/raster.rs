@@ -186,6 +186,94 @@ pub fn fill_polygon(
     }
 }
 
+/// `GDALdllImageLine` for a single-band byte grid: Bresenham burn of each
+/// polyline segment with the caller's value. Coordinates are pixel
+/// coordinates; each point is floored to obtain the integer pixel index,
+/// matching GDAL's convention.
+pub fn draw_lines(
+    grid: &mut [u8],
+    width: usize,
+    height: usize,
+    parts: &[Vec<[f64; 2]>],
+    value: u8,
+) {
+    if width == 0 || height == 0 || grid.len() != width * height {
+        return;
+    }
+
+    for part in parts {
+        if part.len() < 2 {
+            continue;
+        }
+        let last_index = part.len() - 1;
+        for j in 1..=last_index {
+            let mut i_x = part[j - 1][0].floor() as i64;
+            let mut i_y = part[j - 1][1].floor() as i64;
+            let i_x1 = part[j][0].floor() as i64;
+            let i_y1 = part[j][1].floor() as i64;
+
+            let mut n_delta_x = (i_x1 - i_x).abs();
+            let mut n_delta_y = (i_y1 - i_y).abs();
+            let n_x_step = if i_x > i_x1 { -1 } else { 1 };
+            let n_y_step = if i_y > i_y1 { -1 } else { 1 };
+
+            if n_delta_x >= n_delta_y {
+                let n_x_error = n_delta_y << 1;
+                let n_y_error = n_x_error - (n_delta_x << 1);
+                let mut n_error = n_x_error - n_delta_x;
+
+                if j != last_index {
+                    n_delta_x -= 1;
+                }
+
+                loop {
+                    if n_delta_x < 0 {
+                        break;
+                    }
+                    if 0 <= i_x && i_x < width as i64 && 0 <= i_y && i_y < height as i64 {
+                        grid[i_y as usize * width + i_x as usize] = value;
+                    }
+
+                    i_x += n_x_step;
+                    if n_error > 0 {
+                        i_y += n_y_step;
+                        n_error += n_y_error;
+                    } else {
+                        n_error += n_x_error;
+                    }
+                    n_delta_x -= 1;
+                }
+            } else {
+                let n_x_error = n_delta_x << 1;
+                let n_y_error = n_x_error - (n_delta_y << 1);
+                let mut n_error = n_x_error - n_delta_y;
+
+                if j != last_index {
+                    n_delta_y -= 1;
+                }
+
+                loop {
+                    if n_delta_y < 0 {
+                        break;
+                    }
+                    if 0 <= i_x && i_x < width as i64 && 0 <= i_y && i_y < height as i64 {
+                        grid[i_y as usize * width + i_x as usize] = value;
+                    }
+
+                    i_y += n_y_step;
+                    if n_error > 0 {
+                        i_x += n_x_step;
+                        n_error += n_y_error;
+                    } else {
+                        n_error += n_x_error;
+                    }
+                    n_delta_y -= 1;
+                }
+            }
+        }
+    }
+}
+
 /// Inclusive horizontal span burn, clipped to the row.
 fn burn_scanline(grid: &mut [u8], row: usize, width: usize, start: i64, end: i64, value: u8) {
     if start > end {
@@ -281,5 +369,74 @@ mod tests {
         assert_eq!(burn_value(254.6), 255);
         assert_eq!(burn_value(300.0), 255);
         assert_eq!(burn_value(f64::NAN), 0);
+    }
+
+    #[test]
+    fn draws_horizontal_line_without_duplicating_shared_endpoints() {
+        let (width, height) = (8, 4);
+        let mut grid = vec![0u8; width * height];
+        // Pixel centers are at integer + 0.5; y = 1.5 maps to row 1.
+        draw_lines(
+            &mut grid,
+            width,
+            height,
+            &[vec![[0.5, 1.5], [3.5, 1.5], [6.5, 1.5]]],
+            255,
+        );
+        for x in 0..width {
+            let expected = if (0..=6).contains(&x) { 255 } else { 0 };
+            assert_eq!(grid[width + x], expected, "row 1 pixel {x}");
+        }
+        assert!(grid[..width].iter().all(|&v| v == 0));
+        assert!(grid[2 * width..].iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn draws_vertical_line() {
+        let (width, height) = (4, 8);
+        let mut grid = vec![0u8; width * height];
+        draw_lines(
+            &mut grid,
+            width,
+            height,
+            &[vec![[1.5, 0.5], [1.5, 5.5]]],
+            255,
+        );
+        for y in 0..height {
+            let expected = if (0..=5).contains(&y) { 255 } else { 0 };
+            assert_eq!(grid[y * width + 1], expected, "column 1 pixel {y}");
+        }
+    }
+
+    #[test]
+    fn draws_diagonal_line() {
+        let (width, height) = (8, 8);
+        let mut grid = vec![0u8; width * height];
+        draw_lines(
+            &mut grid,
+            width,
+            height,
+            &[vec![[0.5, 0.5], [5.5, 4.5]]],
+            255,
+        );
+        let lit: Vec<(usize, usize)> = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|&(x, y)| grid[y * width + x] == 255)
+            .collect();
+        assert_eq!(lit, vec![(0, 0), (1, 1), (2, 2), (3, 2), (4, 3), (5, 4)]);
+    }
+
+    #[test]
+    fn clips_lines_to_the_grid() {
+        let (width, height) = (4, 4);
+        let mut grid = vec![0u8; width * height];
+        draw_lines(
+            &mut grid,
+            width,
+            height,
+            &[vec![[-2.0, 2.5], [6.0, 2.5]]],
+            255,
+        );
+        assert_eq!(&grid[2 * width..3 * width], &[255, 255, 255, 255]);
     }
 }

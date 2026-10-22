@@ -1,5 +1,6 @@
 import logging
 import os.path
+import subprocess
 
 from config.config import Config
 from sources import osm
@@ -7,41 +8,35 @@ from constants import paths, radar
 
 _logger = logging.getLogger(__name__)
 
+
+def _run_and_check(cmd):
+    _logger.info('command:')
+    _logger.info(' '.join(cmd))
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as e:
+        _logger.error(f'Command failed with exit code {e.returncode}')
+        _logger.error(f'STDOUT: {e.stdout}')
+        _logger.error(f'STDERR: {e.stderr}')
+        raise
+
+
 def generate_png():
     config = Config.instance()
 
-    min_lat = config['bbox']['min_lat']
-    min_lon = config['bbox']['min_lon']
-    max_lat = config['bbox']['max_lat']
-    max_lon = config['bbox']['max_lon']
+    _run_and_check([
+        paths.FRAME_RENDER_BIN.as_posix(),
+        'streets',
+        '--min-lon', config['bbox']['min_lon'],
+        '--min-lat', config['bbox']['min_lat'],
+        '--max-lon', config['bbox']['max_lon'],
+        '--max-lat', config['bbox']['max_lat'],
+        '--width', str(radar.WIDTH),
+        '--height', str(radar.HEIGHT),
+        '--input', paths.STREETS_DATA.as_posix(),
+        '--output', paths.STREETS_IMG.as_posix(),
+    ])
 
-    cmd = 'gdal_rasterize --config OSM_USE_CUSTOM_INDEXING NO -te '
-    cmd += f'{min_lon} {min_lat} {max_lon} {max_lat} '
-    cmd += f'-ts {radar.WIDTH} {radar.HEIGHT} '
-    cmd += '-burn 255 -ot byte -l lines -a_nodata 1 '
-    cmd += f'{paths.STREETS_DATA} {paths.STREETS_TIF}'
-
-    _logger.info('rasterize command:')
-    _logger.info(cmd)
-
-    exit_code = os.system(cmd)
-
-    if exit_code != 0:
-        ex = Exception('could not rasterize osm data')
-        _logger.error(ex)
-        raise ex
-    
-    cmd = f'gdal_translate -of PNG {paths.STREETS_TIF} {paths.STREETS_IMG}'
-
-    _logger.info('convert to png command:')
-    _logger.info(cmd)
-
-    exit_code = os.system(cmd)
-
-    if exit_code != 0:
-        ex = Exception('could not rasterize osm data')
-        _logger.error(ex)
-        raise ex
 
 def create():
     img_exists = paths.STREETS_IMG.exists()
@@ -50,11 +45,11 @@ def create():
     if img_exists:
         _logger.info(f'{paths.STREETS_IMG} already exists, doing nothing')
         return
-    
+
     if data_exists and not img_exists:
         _logger.info(f'{paths.STREETS_DATA} exists, generating png')
         generate_png()
-    
+
     if not data_exists:
         _logger.info(f'{paths.STREETS_DATA} missing, downloading and generating png')
         osm.get()

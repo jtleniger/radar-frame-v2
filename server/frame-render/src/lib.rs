@@ -7,9 +7,11 @@
 //! scanline fill, a nearest-entry color table lookup, and an alpha composite.
 
 pub mod colors;
+pub mod osm;
 pub mod pngio;
 pub mod raster;
 pub mod render;
+pub mod streets;
 
 use std::fmt;
 

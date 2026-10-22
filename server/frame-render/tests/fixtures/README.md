@@ -7,6 +7,16 @@ then two Pillow `paste` calls). It is the reference for
 `tests/cli.rs::matches_the_gdal_golden_frame`; never regenerate it with the Rust
 renderer.
 
+`streets.png` is the street mask that the pre-change GDAL sequence in
+`server/setup/streets.py` produced (`gdal_rasterize` over the OSM `lines`
+layer, then `gdal_translate` to PNG). It is the reference for
+`tests/cli.rs::street_mask_matches_the_gdal_golden_mask`.
+
+`streets.osm` is a minimal Overpass-style OSM XML document that produces the
+same mask: one primary highway way with three nodes forming the diagonal line
+used to generate `streets.png`. The Rust street rasterizer parses this XML and
+must reproduce the GDAL golden pixel for pixel.
+
 Versions used: GDAL 3.10.3 (Debian `gdal-bin` 3.10.3, `python3-gdal` 3.10.3),
 Pillow 11.1.0, NumPy 2.2.4.
 

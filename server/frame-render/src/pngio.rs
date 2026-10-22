@@ -96,6 +96,50 @@ pub fn read_rgba(path: &Path) -> Result<(usize, usize, Vec<u8>)> {
     Ok((decoded.width, decoded.height, decoded.samples))
 }
 
+/// Write an 8-bit grayscale PNG from a row-major `width * height` buffer,
+/// optionally declaring a transparent gray level via a `tRNS` chunk.
+///
+/// The `tRNS` payload for grayscale is a big-endian 16-bit gray level; for an
+/// 8-bit image the high byte is zero and the low byte is the sample value.
+pub fn write_gray8(
+    path: &Path,
+    width: usize,
+    height: usize,
+    samples: &[u8],
+    transparent: Option<u8>,
+) -> Result<()> {
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| Error(format!("frame size {width}x{height} is too large")))?;
+    if samples.len() != expected {
+        return Err(Error(format!(
+            "{}: expected {expected} gray bytes for {width}x{height}, got {}",
+            path.display(),
+            samples.len()
+        )));
+    }
+    let (width, height) = (u32::try_from(width), u32::try_from(height));
+    let (Ok(width), Ok(height)) = (width, height) else {
+        return Err(Error(format!(
+            "frame size {width:?}x{height:?} does not fit a PNG header"
+        )));
+    };
+
+    let fail = |e: png::EncodingError| Error(format!("{}: {e}", path.display()));
+
+    let file = File::create(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Grayscale);
+    encoder.set_depth(png::BitDepth::Eight);
+    if let Some(gray) = transparent {
+        encoder.set_trns((gray as u16).to_be_bytes().to_vec());
+    }
+    let mut writer = encoder.write_header().map_err(fail)?;
+    writer.write_image_data(samples).map_err(fail)?;
+    writer.finish().map_err(fail)?;
+    Ok(())
+}
+
 /// Write an 8-bit RGBA PNG from a row-major `width * height * 4` buffer.
 pub fn write_rgba(path: &Path, width: usize, height: usize, rgba: &[u8]) -> Result<()> {
     let expected = width
@@ -199,5 +243,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("frame.png");
         assert!(write_rgba(&path, 2, 2, &[0; 3]).is_err());
+    }
+
+    #[test]
+    fn gray8_round_trips_with_trns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("streets.png");
+        write_gray8(&path, 2, 1, &[1, 255], Some(1)).unwrap();
+
+        let mask = read_gray8(&path).unwrap();
+        assert_eq!((mask.width, mask.height), (2, 1));
+        assert_eq!(mask.samples, vec![1, 255]);
+        assert_eq!(mask.transparent, Some(1));
     }
 }

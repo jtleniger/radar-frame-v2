@@ -269,3 +269,67 @@ fn matches_the_gdal_golden_frame() {
         &differing[..differing.len().min(10)]
     );
 }
+
+/// The street mask that the pre-change GDAL sequence produced for the ktlx-mini
+/// fixture bbox. See `tests/fixtures/README.md`.
+#[test]
+fn street_mask_matches_the_gdal_golden_mask() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ktlx-mini");
+    let source = fixtures.join("streets.osm");
+    let expected_png = fixtures.join("streets.png");
+    for path in [&source, &expected_png] {
+        assert!(path.exists(), "missing fixture {}", path.display());
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("streets.png");
+
+    let args: Vec<String> = vec![
+        "streets".into(),
+        "--min-lon".into(),
+        "-97.26".into(),
+        "--min-lat".into(),
+        "35.35".into(),
+        "--max-lon".into(),
+        "-97.21".into(),
+        "--max-lat".into(),
+        "35.39".into(),
+        "--width".into(),
+        "800".into(),
+        "--height".into(),
+        "444".into(),
+        "--input".into(),
+        source.display().to_string(),
+        "--output".into(),
+        output.display().to_string(),
+    ];
+
+    let result = run(&args);
+    assert!(result.status.success(), "{}", stderr(&result));
+
+    let actual = pngio::read_gray8(&output).unwrap();
+    let expected = pngio::read_gray8(&expected_png).unwrap();
+
+    assert_eq!(
+        (actual.width, actual.height),
+        (expected.width, expected.height)
+    );
+    assert_eq!(actual.transparent, expected.transparent);
+
+    let differing = actual
+        .samples
+        .iter()
+        .zip(&expected.samples)
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(index, (a, b))| (index % actual.width, index / actual.width, *a, *b))
+        .collect::<Vec<_>>();
+
+    assert!(
+        differing.is_empty(),
+        "{} of {} pixels differ; first 10: {:?}",
+        differing.len(),
+        actual.width * actual.height,
+        &differing[..differing.len().min(10)]
+    );
+}
