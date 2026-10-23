@@ -1,0 +1,32 @@
+[package]
+name = "radar-frame"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+description = "HTTP service and CLIs for the radar frame e-ink display"
+
+[dependencies]
+ab_glyph = "0.2"
+askama = "0.16"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["form", "query"] }
+bzip2 = "0.6"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+clap = { version = "4.5", features = ["derive"] }
+flate2 = "1"
+png = "0.18"
+quick-xml = "0.37"
+reqwest = { version = "0.13", features = ["json", "form", "query"] }
+resvg = "0.45"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

@@ -1,10 +1,11 @@
 # Migration: Python/GDAL service to a Rust service
 
-The server (`server/`) is a Flask app that shells out to GDAL and, until this
-migration, to a Go program (`go-nexrad-geojson`). The client (`client/`) is a
-Python service for a Raspberry Pi e-ink display. The goal is a Rust
-implementation of the whole pipeline with no Go, GDAL, PROJ, or Python runtime
-dependency for the server and client.
+The server (`server/`) was a Flask app that shelled out to GDAL and, until this
+migration, to a Go program (`go-nexrad-geojson`). It is now the Rust
+`server/radar-frame` binary. The client (`client/`) is still a Python service
+for a Raspberry Pi e-ink display. The goal is a Rust implementation of the
+whole pipeline with no Go, GDAL, PROJ, or Python runtime dependency for the
+server and client.
 
 Migration is cutover per unit, not a rewrite behind a flag: each unit replaces a
 working component end to end, keeps the wire protocol and output artifacts
@@ -21,7 +22,8 @@ stable, and lands with its own tests.
 | 2d | Archive -> frame in one pass | Stream Archive II gates straight into the frame renderer, dropping the per-elevation GeoJSON intermediate | Done: `frame-render frame` (PR #5) |
 | 3a | E-ink frame composition | `views/`, `components/info`, `components/forecast`, `components/font`, palette generation: radar/forecast images, info bar, text, icons, quantization | Done: `server/frame-view` (PR #6) |
 | 3b | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `server/`, `state/`, `modes/`, `sources/`, `setup/` | Done: `server/radar-frame` (PR #7) |
-| 3c | Deployment cutover | Remove the Python server, gunicorn, Pillow/CairoSVG/pytz dependencies, and update services/docs/CI | Not started |
+| 3c | Deployment cutover | Remove the Python server, gunicorn, Pillow/CairoSVG/pytz dependencies, and update services/docs/CI | Done: `radar-frame serve` (unit + README) |
+| 3d | Single-binary consolidation | One Cargo package and one binary; grouped CLI; embedded color table; flat /opt deployment; one README | Done: `server/Cargo.toml` (unit 3d) |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
 
@@ -29,11 +31,11 @@ stable, and lands with its own tests.
 
 - `/`, `/settings`, and `/frame` keep their current request and response
   semantics; the client is not migrated twice.
-- `data/nexrad-latest-REF-{1,2,3}.json` keeps the current GeoJSON layout:
-  `FeatureCollection`, one `Polygon` per gate, ring order A, B, D, C, A,
-  `properties.value`.
-- The rendered frame keeps its pixel dimensions, color table
-  (`server/gdal-colors.txt`), and street overlay order.
+- The fused Archive II renderer keeps the frame bytes the two-step GeoJSON path
+  produced; GeoJSON is no longer produced or consumed by the server.
+- The rendered frame keeps its pixel dimensions, embedded color table
+  (`server/assets/gdal-colors.txt`, overridable through `[render] colors`), and
+  street overlay order.
 - Every unit lands with a reproducible fixture and a golden-output comparison
   against the implementation it replaces, before that implementation is
   deleted.
@@ -76,8 +78,9 @@ GeoTIFFs:
   bbox, replacing three `gdal_rasterize` runs. The input GeoJSON and the output
   grid share the WGS84 lon/lat frame, so only the affine geotransform is
   applied; the polygon scanline fill is a port of `GDALdllImageFilledPolygon`.
-- Max composite of elevations 1-3, replacing `gdal_calc.py` (including its Byte
-  nodata default of 255, which is what the uncovered background pixels are).
+- Max composite of elevations 1-3, replacing `gdal_calc.py`. Gated-out and
+  uncovered pixels stay 0 (the color table's transparent entry); GDAL 3.10's
+  `gdal_rasterize` nodata-0 regression must not be reproduced.
 - `server/gdal-colors.txt` with nearest-color-entry lookup and alpha, replacing
   `gdaldem color-relief`.
 - RGBA PNG output, replacing `gdal_translate`.
@@ -89,9 +92,13 @@ Acceptance evidence:
 - `cargo test --all-targets` passes, including the golden comparison against the
   pre-change GDAL/PIL renderer: 0 differing pixels of 355200 for the fixture in
   `server/frame-render/tests/fixtures/ktlx-mini/` (generated with GDAL 3.10.3
-  and Pillow 11.1.0; see the README there).
+  and Pillow 11.1.0, with the raster nodata unset to keep the pre-3.10
+  `gdal_rasterize` behavior; see the README there).
 - The same frame rendered through the new `render.py` matches the same golden
-  with 0 differing pixels.
+  with 0 differing pixels. The first version of the port instead reproduced
+  GDAL 3.10.3's `gdal_rasterize` nodata-0 regression literally and painted the
+  gated-out background opaque `(46, 11, 119)`; the golden and the renderer were
+  corrected to the transparent entry that the pre-3.10 pipeline used.
 - Rasterization was additionally compared against `gdal_rasterize` for 4000
   random polygons and 300 polygons with interior rings and fractional values
   (10.4 / 10.5 / 41.4 / 254.5 / 300): 0 differing pixels.
@@ -264,11 +271,11 @@ import numpy as np
 from PIL import Image
 a = np.array(Image.open('data/nexrad-latest.png'))
 print('frame', a.shape)
-covered = (a[:, :, 0] != 46) | (a[:, :, 1] != 11)
+covered = (a[:, :, :3] != 0).any(axis=2)
 print('covered pixels', int(covered.sum()), 'of', covered.size)
 strong = (a[:, :, 0] > 200) & (a[:, :, 1] > 100)
 print('>= 41 dBZ pixels', int(strong.sum()))
-print('KTLX site is background:', bool((a[200:209, 650:659, 0] == 46).all()))
+print('KTLX site is background:', bool((a[200:209, 650:659, :3] == 0).all()))
 img = Image.open('data/frame.png')
 print('e-ink frame', img.size, img.mode)
 PY
@@ -278,7 +285,7 @@ Reference values for this volume and bbox: 800x444; 146,670 covered pixels of
 355,200; 22,414 pixels at 41 dBZ or more; KTLX is a background-coloured 9x9
 hole around `(654, 204)` (its cone of silence). `main.py render-volume --file
 data/nexrad-latest.ar2` reproduces them exactly; its `data/nexrad-latest.png`
-is byte-identical (SHA-256 `a823e49a...`) to the image the manual steps
+is byte-identical (SHA-256 `b30c160e...`) to the image the manual steps
 produced. The mask for this bbox is empty because the Overpass fetch was
 refused (see below), and `render-volume` adopted it without a refetch.
 
@@ -286,8 +293,9 @@ refused (see below), and `render-volume` adopted it without a refetch.
   north-east across the upper half of the frame, with the hook wrapping toward
   the middle - the mesocyclone that produced the tornado about 15 minutes
   before this volume.
-- Uncovered background is opaque `(46, 11, 119)` (unit 2a notes why), so
-  "covered" above means "any gate, including the minimum value".
+- Uncovered background is the color table's transparent entry flattened onto
+  black, `(0, 0, 0)` (unit 2a notes why), so "covered" above means any
+  non-background pixel: any gate, including the minimum value.
 - `data/frame.png` is 800x480 and uses only the seven palette colours (black,
   white, red, orange, yellow, green, blue). `views.storm.render([])` passes no
   alerts, so the bottom bar shows only the timestamp.
@@ -533,15 +541,135 @@ return 400 instead of Flask's uncaught `KeyError` 500, and `/frame` renders once
 per due interval instead of the Python storm mode's redundant second radar
 render.
 
-## Unit 3c: Deployment cutover
+## Unit 3c: Deployment cutover (done)
 
-- Delete `server/main.py`, `server/server/`, `server/modes/`, `server/state/`,
-  `server/sources/`, `server/config/`, `server/setup/`,
-  `server/requirements.txt`, `server/views/`, `server/static/`,
-  `server/bbox.py`, and `server/states.md` once nothing in the deployment
-  imports them. The HTML templates and stylesheet now live in
-  `server/radar-frame/templates/` and `server/radar-frame/static/`.
-- Replace the gunicorn service with `radar-frame serve` and update `README.md`.
+The deployment is now the Rust binary only. Removed:
+
+- `server/main.py`, `server/bbox.py`, `server/states.md`, and
+  `server/requirements.txt`;
+- `server/server/`, `server/modes/`, `server/state/`, `server/sources/`,
+  `server/setup/`, `server/views/`, `server/static/`, `server/components/`,
+  and `server/constants/`;
+- `server/config/config.py` and `server/config/__init__.py`;
+- `server/radar-frame/tests/fixtures/capture.py`, which imported the Flask
+  tree. Its goldens are unchanged, `tests/api.rs` still compares against them,
+  and the fixture README records the pre-cutover commit for regeneration.
+
+`server/config/` itself stays because the service still reads
+`config/config.ini` relative to its working directory;
+`config/config.example.ini` is the template users copy. `gdal-colors.txt` and
+`server/data/` are runtime inputs rather than Python, so they stay. The HTML
+templates and stylesheet were already duplicate copies of the askama files in
+`server/radar-frame/`, so deleting `views/` and `static/` changes no served
+bytes.
+
+`server/radar-frame.example.service` now runs `bin/radar-frame serve` from
+`/opt/radar-frame/server` as the `radar-frame` user. `PYTHONUNBUFFERED` is
+gone; the log file, its 100 kB rotation and four backups, the
+`0.0.0.0:8000` default bind, and restart-on-failure are unchanged.
+`server/README.md` covers the build, the config copy, the standalone CLIs, the
+deployment layout, and the historical-volume workflow.
+
+Acceptance evidence:
+
+- `find server -name '*.py'` is empty, `git ls-files 'server/*.py'` returns
+  nothing, and `python3 -m compileall -q server` exits 0 with no files.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --all-targets` pass in all four crates (`nexrad-geojson`,
+  `frame-render`, `frame-view`, `radar-frame`).
+- A deployment-shaped directory containing only `bin/radar-frame`,
+  `gdal-colors.txt`, `config/config.ini`, and `data/` (no Python and no
+  `frame-render`/`frame-view` binaries) ran `bin/radar-frame setup` and then
+  `bin/radar-frame render-volume --file data/nexrad-latest.ar2` on the unit 2c
+  KTLX volume: 800x444 RGBA radar frame with SHA-256 `c8a90300...`, matching
+  the unit 2d evidence, and an 800x480 RGB e-ink frame.
+- `bin/radar-frame serve --mock` in that directory served `/` (200),
+  `POST /settings` with `Manual` + `Storm` (200, reflected on the next `/`),
+  `/frame?debug=true` (200 `image/png`, byte-identical to `data/frame.png`),
+  and `/static/style.css` (200, byte-identical to the embedded source).
+- A second clean layout with only a hand-written `data/streets.osm` started
+  `serve` with no Overpass request: it adopted the OSM file, wrote
+  `data/streets.png`, stamped both bbox files, and served `/` and
+  `/static/style.css` with 200.
+- `systemd-analyze verify` accepts the unit once the `/opt` executable and
+  service user exist; against the uninstalled template it reports only that
+  missing path.
+
+The cutover changes what runs, not the HTTP or render code: the live S3/NWS
+`/frame` path and its 304 behaviour remain covered by the unit 3b goldens.
+
+## Unit 3d: Single-binary consolidation (done)
+
+`server/` is one Cargo package (`radar-frame`) with one binary. Removed:
+
+- the `nexrad-geojson`, `frame-render`, `frame-view`, and `radar-frame`
+  packages, their four `Cargo.lock` files, their four binaries, the four
+  executables copied into `server/bin/`, and the per-crate `target/`
+  directories;
+- `frame-render radar` (GeoJSON input) and the `nexrad-geojson` converter.
+  GeoJSON is neither produced nor consumed, so `VEL`, `SW`, `ZDR`, `PHI`, and
+  `RHO` output is gone; the only radar renderer is `render archive`
+  (Archive II -> REF frame);
+- the nested `/opt/radar-frame/server` install layout and the copied
+  `gdal-colors.txt`.
+
+The package layout is `src/{cli,api,clock,config,...}.rs`, `src/sources/`,
+`src/nexrad/`, `src/render/`, `src/view/`, with `src/main.rs` calling
+`radar_frame::cli::main()`, plus `assets/`, `templates/`, `static/`, `tests/`,
+and `config/`. Exactly one README and one manifest remain.
+
+Commands:
+
+| Before | After |
+|---|---|
+| `frame-render frame` | `radar-frame render archive` |
+| `frame-render streets` | `radar-frame render streets` |
+| `frame-view storm\|clear\|palette` | `radar-frame view storm\|clear\|palette` |
+| `radar-frame render-volume` | `radar-frame render volume` |
+| `radar-frame render-clear\|render-storm` | `radar-frame render clear\|storm` |
+| `radar-frame serve\|setup` | unchanged |
+| `frame-render radar` | removed |
+| `nexrad-geojson` | removed |
+
+The color table moved to `assets/gdal-colors.txt` and is embedded with
+`include_str!`; `[render] colors` optionally overrides it (relative paths
+resolve from the working directory). Deployment no longer copies the table.
+
+The install layout is flat: `bin/radar-frame`, `config/config.ini`, `data/`,
+and the log under `/opt/radar-frame`, with `WorkingDirectory=/opt/radar-frame`
+and `ExecStart=/opt/radar-frame/bin/radar-frame serve`. The upgrade path moves
+`config/` and `data/` out of `/opt/radar-frame/server`, removes that directory,
+installs the new binary and unit, then restarts. Both sequences are in
+`server/README.md`.
+
+Tests are consolidated into `tests/{api,render,view}.rs` with fixtures under
+`tests/fixtures/{api,nexrad,frame,view}/`; the fixture READMEs are deleted and
+their provenance is recorded in `server/README.md`.
+
+Acceptance evidence:
+
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --all-targets` pass in `server/`.
+- `find server -name Cargo.toml` reports only `server/Cargo.toml`;
+  `cargo metadata --no-deps` reports one package and one bin target,
+  `radar-frame`.
+- The fused frame matches the GDAL/PIL golden with 0 differing pixels of
+  355,200; the street mask matches its GDAL golden with 0 differing pixels. The
+  view goldens keep their tolerances (info bar identical, clear frame 99.31%,
+  storm block mean within 3.4/255), and the HTTP goldens still match Flask
+  byte-for-byte (HTML) and pixel-for-pixel (PNG).
+- A deployment-shaped directory containing only `bin/radar-frame`, `config/`,
+  and `data/` (no `gdal-colors.txt`, no sibling binaries) ran `setup` and
+  `render volume` on the unit 2c KTLX volume: 800x444 radar frame with SHA-256
+  `b30c160e...` (170,246 bytes) and an 800x480 seven-colour frame.
+- Adding `[render] colors = <absolute path>` with `0 255 0 0 255` turned the
+  background radar pixels red; removing the key restored the SHA-256 above.
+- `bin/radar-frame serve --mock` in that directory served `/` (200), POST
+  `/settings` (200), `/frame` (200 then 304), `/frame?debug=true` (200,
+  byte-identical to `data/frame.png`), and `/static/style.css` (200), with no
+  Overpass request.
+- `systemd-analyze verify radar-frame.example.service` reports only the
+  expected missing `/opt/radar-frame/bin/radar-frame` path.
 
 ## Unit 4: Pi client
 
@@ -553,38 +681,22 @@ Scope: `client/main.py` and `client/radar-frame-client.service`.
 
 ## Unit 5: CI
 
-- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test --all-targets` for `server/nexrad-geojson`.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --all-targets` once from `server/`.
 - Golden fixture regression (already part of `cargo test`).
-- `python3 -m compileall -q server` while Python remains.
+- `python3 -m compileall -q client` while the Pi client is still Python (the
+  server no longer contains Python).
 
 ## Verifying the current state
 
 ```sh
-cd server/nexrad-geojson
+cd server
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
-
-cd ../frame-render
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-
-cd ../frame-view
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-
-cd ../radar-frame
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-
-cd ..
-mkdir -p bin
-cp nexrad-geojson/target/release/nexrad-geojson bin/
-cp frame-render/target/release/frame-render bin/
-cp frame-view/target/release/frame-view bin/
-python3 -m compileall -q .
+cargo build --release
+target/release/radar-frame --help
 ```
+
+Only `target/release/radar-frame` is produced. The server tree has no Python to
+compile; `client/` stays Python until unit 4.
