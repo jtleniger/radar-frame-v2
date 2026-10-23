@@ -254,8 +254,8 @@ target/release/radar-frame render volume --file data/nexrad-latest.ar2
 Expected values for this volume and bbox: 146,670 covered pixels of 355,200;
 22,414 pixels at 41 dBZ or more; the KTLX cone of silence is a
 background-coloured 9x9 hole around `(654, 204)`. The radar frame SHA-256 is
-`c8a90300ea730dfd045a651431864a4fdf0c2272aedbf3852e7dd6cbbedd12ad`
-(177,246 bytes).
+`b30c160e6745fe2c4ee91d2b2bcfc6d45cf35700c876b99daf67a6c650af795a`
+(170,246 bytes).
 
 The lower-level commands render the same pieces without the configured
 `[bbox]`:
@@ -324,12 +324,17 @@ cargo test --all-targets
 - `fixtures/frame/ktlx-mini`: the GDAL/Pillow golden frame
   (`frame.expected.png`), the GDAL street mask (`streets.png`), and the minimal
   OSM XML that reproduces it. Generated with GDAL 3.10.3, Pillow 11.1.0, and
-  NumPy 2.2.4, bbox `-97.26,35.35,-97.21,35.39`, 800x444. Never regenerate
-  either golden with the Rust renderer. The mask's `tRNS` level 1 and the frame
-  background `(46, 11, 119)` come from GDAL's Byte nodata 255; the notes in
-  `fixtures/frame/README.md` explain them. The historical regeneration recipe
-  used the removed `nexrad-geojson` converter and belongs to the pre-cutover
-  commit, so it is not runnable from this tree.
+  NumPy 2.2.4 plus the pre-3.10 `gdal_rasterize` nodata semantics described
+  below, bbox `-97.26,35.35,-97.21,35.39`, 800x444. Never regenerate either
+  golden with the Rust renderer. The mask's `tRNS` level 1 leaves alpha 254
+  where the overlay blends; the frame background is the color table's
+  transparent `0 0 0 0 0` entry flattened onto black. GDAL 3.10 changed
+  `gdal_rasterize` to declare nodata 0 even without `-a_nodata`, which makes
+  `gdal_calc.py` rewrite the uncovered pixels to 255 and paint them opaque
+  `(46, 11, 119)`; regenerate with the raster nodata unset (`gdal_edit.py
+  -unsetnodata`) to keep the pre-3.10 behavior. The historical regeneration
+  recipe used the removed `nexrad-geojson` converter and belongs to the
+  pre-cutover commit, so it is not runnable from this tree.
 - `fixtures/view`: the Python views at commit `202792a`, Pillow 11.1.0,
   CairoSVG 2.9.1. The info bar is identical; the clear frame is 99.31%
   identical (icon edges); the storm dither differs but 8x8 block means stay

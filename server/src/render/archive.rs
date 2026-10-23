@@ -111,7 +111,7 @@ pub fn render_archive(options: &Options) -> Result<()> {
     }
 
     render::write_composite(
-        &mut composite,
+        &composite,
         &streets,
         &table,
         options.width,

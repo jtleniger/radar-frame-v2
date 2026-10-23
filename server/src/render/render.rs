@@ -7,11 +7,6 @@ use crate::render::pngio;
 use crate::render::raster::Transform;
 use crate::render::{Error, Result};
 
-/// `gdal_calc.py` defaults an undefined output nodata to the Byte maximum, and
-/// the rasterized gates carry nodata 0, so every pixel no elevation covers ends
-/// up as 255 (which the color table then maps its last entry).
-const COMPOSITE_NODATA: u8 = 255;
-
 /// Frame extent and pixel size.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Bounds {
@@ -62,22 +57,24 @@ pub(crate) fn merge(composite: &mut [u8], grid: &[u8]) {
     }
 }
 
-/// Uncovered pixels become the composite nodata, then colorize, overlay the
-/// street mask, and write the RGBA PNG.
+/// Uncovered pixels stay 0: the old `gdal_rasterize` left them at its init
+/// value without declaring a nodata value, so `gdal_calc.py` kept them at 0 and
+/// the color table's `0 0 0 0 0` entry (alpha 0) made the gated-out background
+/// transparent. Colorize, overlay the street mask, and write the RGBA PNG.
+///
+/// GDAL 3.10 changed `gdal_rasterize` to declare nodata 0, which made
+/// `gdal_calc.py` rewrite every uncovered pixel to its Byte nodata default
+/// (255) and `gdaldem` color it like the last entry. The port must not copy
+/// that: 255 has no table entry of its own, so it would paint the background
+/// opaque `(46, 11, 119)` instead of transparent.
 pub(crate) fn write_composite(
-    composite: &mut [u8],
+    composite: &[u8],
     streets: &pngio::Gray8,
     table: &ColorTable,
     width: usize,
     height: usize,
     output: &Path,
 ) -> Result<()> {
-    for value in composite.iter_mut() {
-        if *value == 0 {
-            *value = COMPOSITE_NODATA;
-        }
-    }
-
     let rgba = compose(composite, streets, &table.lut());
     pngio::write_rgba(output, width, height, &rgba)
 }
@@ -140,5 +137,35 @@ mod tests {
         let mut composite = vec![0, 20, 10, 30];
         merge(&mut composite, &[41, 10, 30, 30]);
         assert_eq!(composite, vec![41, 20, 30, 30]);
+    }
+
+    /// Gated-out and uncovered pixels stay 0, which the shipped table maps to
+    /// its `0 0 0 0 0` entry: the background must flatten to black, not to the
+    /// opaque dark blue of the table's last entry.
+    #[test]
+    fn uncovered_pixels_use_the_transparent_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("frame.png");
+        let streets = pngio::Gray8 {
+            width: 2,
+            height: 1,
+            samples: vec![0, 0],
+            transparent: None,
+        };
+
+        write_composite(
+            &[0, 40],
+            &streets,
+            &ColorTable::builtin().unwrap(),
+            2,
+            1,
+            &output,
+        )
+        .unwrap();
+
+        let (width, height, rgba) = pngio::read_rgba(&output).unwrap();
+        assert_eq!((width, height), (2, 1));
+        assert_eq!(&rgba[..4], &[0, 0, 0, 255]);
+        assert_eq!(&rgba[4..], &[244, 129, 37, 255]);
     }
 }

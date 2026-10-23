@@ -78,8 +78,9 @@ GeoTIFFs:
   bbox, replacing three `gdal_rasterize` runs. The input GeoJSON and the output
   grid share the WGS84 lon/lat frame, so only the affine geotransform is
   applied; the polygon scanline fill is a port of `GDALdllImageFilledPolygon`.
-- Max composite of elevations 1-3, replacing `gdal_calc.py` (including its Byte
-  nodata default of 255, which is what the uncovered background pixels are).
+- Max composite of elevations 1-3, replacing `gdal_calc.py`. Gated-out and
+  uncovered pixels stay 0 (the color table's transparent entry); GDAL 3.10's
+  `gdal_rasterize` nodata-0 regression must not be reproduced.
 - `server/gdal-colors.txt` with nearest-color-entry lookup and alpha, replacing
   `gdaldem color-relief`.
 - RGBA PNG output, replacing `gdal_translate`.
@@ -91,9 +92,13 @@ Acceptance evidence:
 - `cargo test --all-targets` passes, including the golden comparison against the
   pre-change GDAL/PIL renderer: 0 differing pixels of 355200 for the fixture in
   `server/frame-render/tests/fixtures/ktlx-mini/` (generated with GDAL 3.10.3
-  and Pillow 11.1.0; see the README there).
+  and Pillow 11.1.0, with the raster nodata unset to keep the pre-3.10
+  `gdal_rasterize` behavior; see the README there).
 - The same frame rendered through the new `render.py` matches the same golden
-  with 0 differing pixels.
+  with 0 differing pixels. The first version of the port instead reproduced
+  GDAL 3.10.3's `gdal_rasterize` nodata-0 regression literally and painted the
+  gated-out background opaque `(46, 11, 119)`; the golden and the renderer were
+  corrected to the transparent entry that the pre-3.10 pipeline used.
 - Rasterization was additionally compared against `gdal_rasterize` for 4000
   random polygons and 300 polygons with interior rings and fractional values
   (10.4 / 10.5 / 41.4 / 254.5 / 300): 0 differing pixels.
@@ -266,11 +271,11 @@ import numpy as np
 from PIL import Image
 a = np.array(Image.open('data/nexrad-latest.png'))
 print('frame', a.shape)
-covered = (a[:, :, 0] != 46) | (a[:, :, 1] != 11)
+covered = (a[:, :, :3] != 0).any(axis=2)
 print('covered pixels', int(covered.sum()), 'of', covered.size)
 strong = (a[:, :, 0] > 200) & (a[:, :, 1] > 100)
 print('>= 41 dBZ pixels', int(strong.sum()))
-print('KTLX site is background:', bool((a[200:209, 650:659, 0] == 46).all()))
+print('KTLX site is background:', bool((a[200:209, 650:659, :3] == 0).all()))
 img = Image.open('data/frame.png')
 print('e-ink frame', img.size, img.mode)
 PY
@@ -280,7 +285,7 @@ Reference values for this volume and bbox: 800x444; 146,670 covered pixels of
 355,200; 22,414 pixels at 41 dBZ or more; KTLX is a background-coloured 9x9
 hole around `(654, 204)` (its cone of silence). `main.py render-volume --file
 data/nexrad-latest.ar2` reproduces them exactly; its `data/nexrad-latest.png`
-is byte-identical (SHA-256 `a823e49a...`) to the image the manual steps
+is byte-identical (SHA-256 `b30c160e...`) to the image the manual steps
 produced. The mask for this bbox is empty because the Overpass fetch was
 refused (see below), and `render-volume` adopted it without a refetch.
 
@@ -288,8 +293,9 @@ refused (see below), and `render-volume` adopted it without a refetch.
   north-east across the upper half of the frame, with the hook wrapping toward
   the middle - the mesocyclone that produced the tornado about 15 minutes
   before this volume.
-- Uncovered background is opaque `(46, 11, 119)` (unit 2a notes why), so
-  "covered" above means "any gate, including the minimum value".
+- Uncovered background is the color table's transparent entry flattened onto
+  black, `(0, 0, 0)` (unit 2a notes why), so "covered" above means any
+  non-background pixel: any gate, including the minimum value.
 - `data/frame.png` is 800x480 and uses only the seven palette colours (black,
   white, red, orange, yellow, green, blue). `views.storm.render([])` passes no
   alerts, so the bottom bar shows only the timestamp.
@@ -655,7 +661,7 @@ Acceptance evidence:
 - A deployment-shaped directory containing only `bin/radar-frame`, `config/`,
   and `data/` (no `gdal-colors.txt`, no sibling binaries) ran `setup` and
   `render volume` on the unit 2c KTLX volume: 800x444 radar frame with SHA-256
-  `c8a90300...` (177,246 bytes) and an 800x480 seven-colour frame.
+  `b30c160e...` (170,246 bytes) and an 800x480 seven-colour frame.
 - Adding `[render] colors = <absolute path>` with `0 255 0 0 255` turned the
   background radar pixels red; removing the key restored the SHA-256 above.
 - `bin/radar-frame serve --mock` in that directory served `/` (200), POST
