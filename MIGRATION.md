@@ -23,6 +23,7 @@ stable, and lands with its own tests.
 | 3a | E-ink frame composition | `views/`, `components/info`, `components/forecast`, `components/font`, palette generation: radar/forecast images, info bar, text, icons, quantization | Done: `server/frame-view` (PR #6) |
 | 3b | HTTP/state/forecast layer | Flask app, `requests`, S3/HTTP sources, `server/`, `state/`, `modes/`, `sources/`, `setup/` | Done: `server/radar-frame` (PR #7) |
 | 3c | Deployment cutover | Remove the Python server, gunicorn, Pillow/CairoSVG/pytz dependencies, and update services/docs/CI | Done: `radar-frame serve` (unit + README) |
+| 3d | Single-binary consolidation | One Cargo package and one binary; grouped CLI; embedded color table; flat /opt deployment; one README | Done: `server/Cargo.toml` (unit 3d) |
 | 4 | Pi client | HTTP polling + SPI/GPIO e-ink driver (`waveshare_epd`) | Not started |
 | 5 | CI | `cargo test`, golden fixture, Python syntax checks | Not started |
 
@@ -30,11 +31,11 @@ stable, and lands with its own tests.
 
 - `/`, `/settings`, and `/frame` keep their current request and response
   semantics; the client is not migrated twice.
-- `data/nexrad-latest-REF-{1,2,3}.json` keeps the current GeoJSON layout:
-  `FeatureCollection`, one `Polygon` per gate, ring order A, B, D, C, A,
-  `properties.value`.
-- The rendered frame keeps its pixel dimensions, color table
-  (`server/gdal-colors.txt`), and street overlay order.
+- The fused Archive II renderer keeps the frame bytes the two-step GeoJSON path
+  produced; GeoJSON is no longer produced or consumed by the server.
+- The rendered frame keeps its pixel dimensions, embedded color table
+  (`server/assets/gdal-colors.txt`, overridable through `[render] colors`), and
+  street overlay order.
 - Every unit lands with a reproducible fixture and a golden-output comparison
   against the implementation it replaces, before that implementation is
   deleted.
@@ -591,6 +592,79 @@ Acceptance evidence:
 The cutover changes what runs, not the HTTP or render code: the live S3/NWS
 `/frame` path and its 304 behaviour remain covered by the unit 3b goldens.
 
+## Unit 3d: Single-binary consolidation (done)
+
+`server/` is one Cargo package (`radar-frame`) with one binary. Removed:
+
+- the `nexrad-geojson`, `frame-render`, `frame-view`, and `radar-frame`
+  packages, their four `Cargo.lock` files, their four binaries, the four
+  executables copied into `server/bin/`, and the per-crate `target/`
+  directories;
+- `frame-render radar` (GeoJSON input) and the `nexrad-geojson` converter.
+  GeoJSON is neither produced nor consumed, so `VEL`, `SW`, `ZDR`, `PHI`, and
+  `RHO` output is gone; the only radar renderer is `render archive`
+  (Archive II -> REF frame);
+- the nested `/opt/radar-frame/server` install layout and the copied
+  `gdal-colors.txt`.
+
+The package layout is `src/{cli,api,clock,config,...}.rs`, `src/sources/`,
+`src/nexrad/`, `src/render/`, `src/view/`, with `src/main.rs` calling
+`radar_frame::cli::main()`, plus `assets/`, `templates/`, `static/`, `tests/`,
+and `config/`. Exactly one README and one manifest remain.
+
+Commands:
+
+| Before | After |
+|---|---|
+| `frame-render frame` | `radar-frame render archive` |
+| `frame-render streets` | `radar-frame render streets` |
+| `frame-view storm\|clear\|palette` | `radar-frame view storm\|clear\|palette` |
+| `radar-frame render-volume` | `radar-frame render volume` |
+| `radar-frame render-clear\|render-storm` | `radar-frame render clear\|storm` |
+| `radar-frame serve\|setup` | unchanged |
+| `frame-render radar` | removed |
+| `nexrad-geojson` | removed |
+
+The color table moved to `assets/gdal-colors.txt` and is embedded with
+`include_str!`; `[render] colors` optionally overrides it (relative paths
+resolve from the working directory). Deployment no longer copies the table.
+
+The install layout is flat: `bin/radar-frame`, `config/config.ini`, `data/`,
+and the log under `/opt/radar-frame`, with `WorkingDirectory=/opt/radar-frame`
+and `ExecStart=/opt/radar-frame/bin/radar-frame serve`. The upgrade path moves
+`config/` and `data/` out of `/opt/radar-frame/server`, removes that directory,
+installs the new binary and unit, then restarts. Both sequences are in
+`server/README.md`.
+
+Tests are consolidated into `tests/{api,render,view}.rs` with fixtures under
+`tests/fixtures/{api,nexrad,frame,view}/`; the fixture READMEs are deleted and
+their provenance is recorded in `server/README.md`.
+
+Acceptance evidence:
+
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --all-targets` pass in `server/`.
+- `find server -name Cargo.toml` reports only `server/Cargo.toml`;
+  `cargo metadata --no-deps` reports one package and one bin target,
+  `radar-frame`.
+- The fused frame matches the GDAL/PIL golden with 0 differing pixels of
+  355,200; the street mask matches its GDAL golden with 0 differing pixels. The
+  view goldens keep their tolerances (info bar identical, clear frame 99.31%,
+  storm block mean within 3.4/255), and the HTTP goldens still match Flask
+  byte-for-byte (HTML) and pixel-for-pixel (PNG).
+- A deployment-shaped directory containing only `bin/radar-frame`, `config/`,
+  and `data/` (no `gdal-colors.txt`, no sibling binaries) ran `setup` and
+  `render volume` on the unit 2c KTLX volume: 800x444 radar frame with SHA-256
+  `c8a90300...` (177,246 bytes) and an 800x480 seven-colour frame.
+- Adding `[render] colors = <absolute path>` with `0 255 0 0 255` turned the
+  background radar pixels red; removing the key restored the SHA-256 above.
+- `bin/radar-frame serve --mock` in that directory served `/` (200), POST
+  `/settings` (200), `/frame` (200 then 304), `/frame?debug=true` (200,
+  byte-identical to `data/frame.png`), and `/static/style.css` (200), with no
+  Overpass request.
+- `systemd-analyze verify radar-frame.example.service` reports only the
+  expected missing `/opt/radar-frame/bin/radar-frame` path.
+
 ## Unit 4: Pi client
 
 Scope: `client/main.py` and `client/radar-frame-client.service`.
@@ -601,8 +675,8 @@ Scope: `client/main.py` and `client/radar-frame-client.service`.
 
 ## Unit 5: CI
 
-- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test --all-targets` for `server/nexrad-geojson`.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --all-targets` once from `server/`.
 - Golden fixture regression (already part of `cargo test`).
 - `python3 -m compileall -q client` while the Pi client is still Python (the
   server no longer contains Python).
@@ -610,32 +684,13 @@ Scope: `client/main.py` and `client/radar-frame-client.service`.
 ## Verifying the current state
 
 ```sh
-cd server/nexrad-geojson
+cd server
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
-
-cd ../frame-render
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-
-cd ../frame-view
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-
-cd ../radar-frame
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-
-cd ..
-mkdir -p bin
-cp nexrad-geojson/target/release/nexrad-geojson bin/
-cp frame-render/target/release/frame-render bin/
-cp frame-view/target/release/frame-view bin/
-cp radar-frame/target/release/radar-frame bin/
+cargo build --release
+target/release/radar-frame --help
 ```
 
-The server tree has no Python to compile; `client/` stays Python until unit 4.
+Only `target/release/radar-frame` is produced. The server tree has no Python to
+compile; `client/` stays Python until unit 4.

@@ -6,8 +6,8 @@ After=network.target
 Type=simple
 User=radar-frame
 Group=radar-frame
-WorkingDirectory=/opt/radar-frame/server
-ExecStart=/opt/radar-frame/server/bin/radar-frame serve
+WorkingDirectory=/opt/radar-frame
+ExecStart=/opt/radar-frame/bin/radar-frame serve
 Restart=always
 RestartSec=10
 
