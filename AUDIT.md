@@ -35,8 +35,8 @@ ID form: `<category>.<finding>.<action>`.
 | 2.2 | No structured cycle/upstream events or metrics | Medium | Certain |
 | 2.2.1 | Log one structured event per cycle and per upstream call | — | — |
 | 2.2.2 | Expose counters/ages (at least in `/status`) | — | — |
-| 2.3 | Logs only to a 100 kB × 4 file; no journald; retention days | Medium | Certain |
-| 2.3.1 | Log to stdout + journald; honour `RUST_LOG`; retain 7–14 days | — | — |
+| ~~2.3~~ | ~~Logs only to a 100 kB × 4 file; no journald; retention days~~ | Medium | Certain |
+| ~~2.3.1~~ | ~~Log to stdout + journald; honour `RUST_LOG`; retain 7–14 days~~ | — | — |
 | 2.4 | No startup summary or frame provenance | Medium | Certain |
 | 2.4.1 | Log config/station/zones/timezone/endpoints/version at startup | — | — |
 | 2.4.2 | Log mode, volume key, elevations, alerts, duration, frame bytes/hash per cycle | — | — |
@@ -49,8 +49,8 @@ ID form: `<category>.<finding>.<action>`.
 | 3.3.1 | Add hysteresis/minimum dwell before switching modes | — | — |
 | 3.4 | Restarts refetch state and the latest volume | Medium | High |
 | 3.4.1 | Persist mode selection, `last_updated`, and radar key/mtime | — | — |
-| 3.5 | Unauthenticated `0.0.0.0` exposure enables upstream amplification | Medium | Medium |
-| 3.5.1 | Bind localhost by default; add auth/rate limiting for `/frame` and `/settings` | — | — |
+| ~~3.5~~ | ~~Unauthenticated `0.0.0.0` exposure enables upstream amplification~~ | Medium | Medium |
+| ~~3.5.1~~ | ~~Bind localhost by default; add auth/rate limiting for `/frame` and `/settings`~~ | — | — |
 | 4.1 | S3 listing ignores pagination and can pin to a stale volume | High | Medium |
 | 4.1.1 | Loop `continuation-token` until `IsTruncated=false`; handle MDM-only days | — | — |
 | 4.2 | Elevation 1 is a hard requirement even for valid partial volumes | Medium | Medium |
@@ -69,8 +69,8 @@ ID form: `<category>.<finding>.<action>`.
 | 5.3.1 | Pass borrowed forecast/alerts into the view; remove `ClearInput` | — | — |
 | 5.4 | Upstream bodies are unbounded; no gzip/`Accept`/conditional requests | Medium | Medium |
 | 5.4.1 | Cap bodies, enable gzip, set `Accept`, log status/latency/bytes | — | — |
-| 6.1 | Palette and SVG icons are re-decoded/re-rasterized every frame | Medium | Certain |
-| 6.1.1 | Cache palette and icon bitmaps at startup | — | — |
+| ~~6.1~~ | ~~Palette and SVG icons are re-decoded/re-rasterized every frame~~ | Medium | Certain |
+| ~~6.1.1~~ | ~~Cache palette and icon bitmaps at startup~~ | — | — |
 | 6.2 | Frames are served from disk and can be read torn | High | Medium |
 | 6.2.1 | Publish `Arc<[u8]>` + ETag; serve bytes from memory; support `If-None-Match` | — | — |
 | 6.3 | `Renderer` only forwards to `Engine`; config is read twice | Low | Certain |
@@ -110,7 +110,7 @@ ID form: `<category>.<finding>.<action>`.
 | [ ] | 2.1.1 | Add `/healthz`, `/readyz`, `/status` |
 | [ ] | 2.2.1 | Structured per-cycle and per-upstream logs |
 | [ ] | 2.2.2 | Expose counters/ages in `/status` |
-| [ ] | 2.3.1 | stdout + journald, `RUST_LOG`, 7–14 day retention |
+| [rejected] | ~~2.3.1~~ | ~~stdout + journald, `RUST_LOG`, 7–14 day retention~~ |
 | [ ] | 2.4.1 | Startup summary log |
 | [ ] | 2.4.2 | Per-cycle frame provenance log |
 | [ ] | 3.1.1 | TTL-cache radar status with single-flight |
@@ -118,7 +118,7 @@ ID form: `<category>.<finding>.<action>`.
 | [ ] | 3.2.2 | Per-source last-known-good cache |
 | [ ] | 3.3.1 | Mode hysteresis/minimum dwell |
 | [ ] | 3.4.1 | Persist state and radar key/mtime across restarts |
-| [ ] | 3.5.1 | Localhost default; auth/rate limit public endpoints |
+| [rejected] | ~~3.5.1~~ | ~~Localhost default; auth/rate limit public endpoints~~ |
 | [ ] | 4.1.1 | Paginate S3 listing; handle MDM-only days |
 | [ ] | 4.2.1 | Accept partial elevations; pick first available origin |
 | [ ] | 4.3.1 | Reusable ring fill with no per-gate allocations |
@@ -130,7 +130,7 @@ ID form: `<category>.<finding>.<action>`.
 | [ ] | 5.2.1 | Split provider traits/snapshot |
 | [x] | 5.3.1 | Remove forecast/`ClearInput` clones |
 | [x] | 5.4.1 | Cap bodies, gzip, `Accept`, upstream logging |
-| [ ] | 6.1.1 | Cache palette and icons |
+| [rejected] | ~~6.1.1~~ | ~~Cache palette and icons~~ |
 | [ ] | 6.2.1 | Publish in-memory frame bytes + ETag |
 | [ ] | 6.3.1 | Collapse `Renderer`/single `Settings` |
 | [ ] | 7.1.1 | Background updater + immutable snapshot |
