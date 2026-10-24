@@ -6,8 +6,10 @@ writes the palette. There is no Python, gunicorn, GDAL, PROJ, or subprocess in
 the server: the HTTP service, radar rasterizer, e-ink composition, and Archive
 II parser are all linked into `target/release/radar-frame`.
 
-The client (`client/`) is still the Python service for the Raspberry Pi; it
-polls this server.
+The client (`client/`) is a Rust service for the Raspberry Pi. It polls this
+server, uses the same conditional `/frame` contract, and drives the Waveshare
+7.3-inch panel through `epd-waveshare`. See `client/README.md` for the static
+musl build used on Debian 11.
 
 ## Layout
 

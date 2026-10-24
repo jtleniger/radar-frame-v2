@@ -1,4 +1,4 @@
-venv/
-__pycache__
+target/
 config/config.ini
 radar-frame.log
+radar-frame.log.*

@@ -1,12 +1,15 @@
 [Unit]
 Description=Radar Frame Client
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
+Type=simple
 User=pi
 Group=pi
+SupplementaryGroups=gpio spi
 WorkingDirectory=/home/pi/radar-frame-client
-ExecStart=/home/pi/radar-frame-client/venv/bin/python /home/pi/radar-frame-client/main.py
+ExecStart=/home/pi/radar-frame-client/radar-frame-client --config /home/pi/radar-frame-client/config/config.ini
 Restart=always
 RestartSec=10
 
