@@ -2,9 +2,15 @@
 //!
 //! Request and response semantics follow `server/api.py`, including the 304
 //! polling contract and the auto/manual state machine.
+//!
+//! One background updater owns the mutable [`State`]. It performs the status
+//! probe and the render cycle, then publishes an immutable [`Snapshot`] to a
+//! watch channel. Handlers answer from that snapshot and never hold a lock
+//! across network I/O: a `/frame` poll only wakes the updater when work is due
+//! and waits, bounded, for the result.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use askama::Template;
 use axum::extract::{Form, Query, State as AxumState};
@@ -13,10 +19,11 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::clock::Clock;
 use crate::engine::Renderer;
@@ -28,12 +35,26 @@ use crate::paths::Paths;
 use crate::settings::Settings;
 use crate::setup;
 use crate::sources::{RadarSource, Sources};
-use crate::state::{Mode, ModeSelect, State};
+use crate::state::{Mode, ModeSelect, State, STATUS_TTL};
 
-/// Upper bound for one `/frame` render cycle. Each upstream call is bounded
-/// by the HTTP client timeouts; this caps the whole sequence plus rendering so
-/// one poll cannot hold the state lock forever.
-const CYCLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
+/// Upper bound for one update cycle. Each upstream call is bounded by the
+/// HTTP client timeouts; this caps the whole sequence plus rendering so the
+/// updater always becomes responsive again.
+const CYCLE_DEADLINE: Duration = Duration::from_secs(180);
+
+/// How often the updater wakes without a poll, so the schedule keeps running
+/// when the display client is offline.
+const TICK: Duration = Duration::from_secs(60);
+
+/// How long a `/frame` poll waits for the updater to finish the work it woke.
+const UPDATE_DEADLINE: Duration = Duration::from_secs(185);
+
+/// Immutable schedule and frame published by the updater. Handlers clone the
+/// handle, never the mutable state.
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    pub state: State,
+}
 
 pub struct AppState {
     pub settings: Settings,
@@ -42,11 +63,16 @@ pub struct AppState {
     pub sources: Sources,
     pub radar: Arc<dyn RadarSource>,
     pub engine: Arc<dyn Renderer>,
-    pub metrics: Metrics,
-    pub state: Mutex<State>,
+    pub metrics: Arc<Metrics>,
+    snapshot: watch::Receiver<Arc<Snapshot>>,
+    commands: mpsc::UnboundedSender<Command>,
 }
 
 impl AppState {
+    /// Build the shared state and start the updater task.
+    ///
+    /// Must be called inside a Tokio runtime: the updater runs as its own
+    /// task and exits when this value (and with it the command sender) drops.
     pub fn new(
         settings: Settings,
         paths: Paths,
@@ -64,6 +90,25 @@ impl AppState {
         let mut state = State::load(&paths.state_file());
         state.frame = PublishedFrame::load(&paths.output_img()).map(Arc::new);
 
+        let (snapshots, snapshot) = watch::channel(Arc::new(Snapshot {
+            state: state.clone(),
+        }));
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let metrics = Arc::new(Metrics::new(started_at));
+
+        let updater = Updater {
+            settings: settings.clone(),
+            paths: paths.clone(),
+            clock: Arc::clone(&clock),
+            sources: sources.clone(),
+            radar: Arc::clone(&radar),
+            engine: Arc::clone(&engine),
+            metrics: Arc::clone(&metrics),
+            state,
+            snapshots,
+        };
+        tokio::spawn(updater.run(receiver));
+
         AppState {
             settings,
             paths,
@@ -71,66 +116,309 @@ impl AppState {
             sources,
             radar,
             engine,
-            metrics: Metrics::new(started_at),
-            state: Mutex::new(state),
+            metrics,
+            snapshot,
+            commands,
         }
     }
 
-    /// Swap the mode from the NWS radar status. True when it changed.
+    /// The schedule and frame published by the last completed update.
+    pub fn snapshot(&self) -> Arc<Snapshot> {
+        self.snapshot.borrow().clone()
+    }
+
+    /// Ask the updater to run whatever is due and return the outcome.
     ///
-    /// The sample is reused for [`crate::state::STATUS_TTL`]; a failure keeps
-    /// the last known status and mode and is not retried until the TTL passes.
-    /// The state lock is held across the call, so a second concurrent poll
-    /// finds the refreshed timestamp and takes the cached path.
-    async fn update_mode(
-        &self,
-        state: &mut State,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<bool> {
-        if now < state.status_next_attempt {
-            return Ok(false);
+    /// Concurrent polls queue behind the single updater, so only one of them
+    /// performs the status probe and the cycle; the rest see the refreshed
+    /// schedule and report [`Update::Skipped`].
+    async fn update(&self) -> Update {
+        let (reply, response) = oneshot::channel();
+        if self.commands.send(Command::Update { reply }).is_err() {
+            return Update::Failed;
         }
-
-        let started = Instant::now();
-        let status = self.sources.status.radar_status().await;
-        self.metrics
-            .upstream(now, started.elapsed(), status.is_ok());
-
-        state.status_checked_at = now;
-        state.status_next_attempt = now + crate::state::STATUS_TTL;
-
-        let status = match status {
-            Ok(status) => status,
-            Err(error) => {
-                // Keep the last-known-good status and the current mode.
-                return Err(error);
-            }
-        };
-
-        tracing::info!("radar status: up={} vcp={}", status.up, status.vcp);
-        if !status.up {
-            tracing::error!("radar down");
-        } else if status.vcp == -1 {
-            tracing::error!("some issue with nws api");
+        match tokio::time::timeout(UPDATE_DEADLINE, response).await {
+            Ok(Ok(update)) => update,
+            _ => Update::Failed,
         }
+    }
 
-        // A change is accepted only after consecutive agreeing samples and a
-        // minimum dwell; the first sample after startup bootstraps the mode.
-        let changed = state.observe_status(status, now);
-        if changed {
-            tracing::info!(event = "mode", mode = state.mode.name(), "mode switched");
+    /// Apply a `/settings` change through the updater. Returns false when the
+    /// updater has stopped.
+    async fn apply_settings(&self, mode_select: ModeSelect, mode: Option<Mode>) -> bool {
+        let (reply, response) = oneshot::channel();
+        if self
+            .commands
+            .send(Command::Settings {
+                mode_select,
+                mode,
+                reply,
+            })
+            .is_err()
+        {
+            return false;
         }
-        Ok(changed)
+        response.await.is_ok()
     }
 }
 
-/// Write the schedule and provenance after a state change. A failure is
-/// reported but never fails the request: the in-memory state remains correct
-/// and the next mutation retries.
-fn persist(paths: &Paths, state: &State) {
-    if let Err(error) = state.save(&paths.state_file()) {
-        tracing::warn!(event = "state", error = %error, "could not persist state");
+enum Command {
+    Update {
+        reply: oneshot::Sender<Update>,
+    },
+    Settings {
+        mode_select: ModeSelect,
+        mode: Option<Mode>,
+        reply: oneshot::Sender<()>,
+    },
+}
+
+/// What one [`Updater::update`] pass did.
+enum Update {
+    /// Nothing was due; the last published frame still stands.
+    Skipped,
+    /// A cycle rendered and validated a new frame.
+    Published(Arc<PublishedFrame>),
+    /// A cycle was due and failed; the last good frame is still published.
+    Failed,
+}
+
+/// Owns [`State`] and is the only task that mutates it.
+struct Updater {
+    settings: Settings,
+    paths: Paths,
+    clock: Arc<dyn Clock>,
+    sources: Sources,
+    radar: Arc<dyn RadarSource>,
+    engine: Arc<dyn Renderer>,
+    metrics: Arc<Metrics>,
+    state: State,
+    snapshots: watch::Sender<Arc<Snapshot>>,
+}
+
+impl Updater {
+    async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
+        // The first tick is one period out: the initial update is driven by
+        // the first poll (or the next tick), never by task startup.
+        let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + TICK, TICK);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let now = self.clock.now();
+                    let _ = self.update(now).await;
+                }
+                command = commands.recv() => {
+                    let Some(command) = command else { break };
+                    match command {
+                        Command::Update { reply } => {
+                            let now = self.clock.now();
+                            let update = self.update(now).await;
+                            let _ = reply.send(update);
+                        }
+                        Command::Settings { mode_select, mode, reply } => {
+                            self.set_mode(mode_select, mode);
+                            let _ = reply.send(());
+                        }
+                    }
+                }
+            }
+        }
     }
+
+    /// One pass: expire a manual selection, refresh the status sample when its
+    /// TTL has passed, and run a cycle when the schedule allows it.
+    async fn update(&mut self, now: DateTime<Utc>) -> Update {
+        let mut changed = self.state.expire_manual(now);
+        if changed {
+            tracing::info!("manual mode expired");
+        }
+
+        if self.state.mode_select == ModeSelect::Auto {
+            match update_mode(&mut self.state, &self.sources, &self.metrics, now).await {
+                Ok(true) => {
+                    self.state.reschedule_now();
+                    changed = true;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    // A status outage must not block rendering or change the
+                    // last known mode; the cycle below still runs on schedule.
+                    tracing::error!("radar status: {error}");
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            self.persist();
+            self.publish();
+        }
+
+        if !self.state.cycle_due(now) {
+            return Update::Skipped;
+        }
+
+        let update = self.run_cycle(now).await;
+        self.persist();
+        self.publish();
+        update
+    }
+
+    fn set_mode(&mut self, mode_select: ModeSelect, mode: Option<Mode>) {
+        tracing::info!("Set mode select to {}", mode_select.name());
+        let now = self.clock.now();
+        self.state.apply_settings(mode_select, mode, now);
+        self.persist();
+        self.publish();
+    }
+
+    async fn run_cycle(&mut self, now: DateTime<Utc>) -> Update {
+        let mode = self.state.mode;
+        let deps = Deps {
+            paths: &self.paths,
+            settings: &self.settings,
+            engine: &self.engine,
+            forecast: self.sources.forecast.as_ref(),
+            alerts: self.sources.alerts.as_ref(),
+            radar: self.radar.as_ref(),
+            metrics: self.metrics.as_ref(),
+            now,
+        };
+
+        let cycle_started = Instant::now();
+        let cycle =
+            match tokio::time::timeout(CYCLE_DEADLINE, modes::run(mode, &deps, &mut self.state))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(Error::new(format!(
+                    "cycle exceeded the {} s deadline",
+                    CYCLE_DEADLINE.as_secs()
+                ))),
+            };
+        let cycle = match cycle {
+            Ok(cycle) => cycle,
+            Err(error) => return self.fail(now, mode, cycle_started, error),
+        };
+
+        let bytes = match std::fs::read(self.paths.output_img()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return self.fail(
+                    now,
+                    mode,
+                    cycle_started,
+                    Error::new(format!("{}: {error}", self.paths.output_img().display())),
+                );
+            }
+        };
+        let frame = match PublishedFrame::new(bytes, now, Some(mode), cycle.degraded.clone()) {
+            Ok(frame) => frame,
+            Err(error) => return self.fail(now, mode, cycle_started, error),
+        };
+
+        let frame = Arc::new(frame);
+        self.state.cycle_succeeded(now, mode);
+        self.state.frame = Some(Arc::clone(&frame));
+
+        let outcome = if cycle.degraded.is_some() {
+            Outcome::Degraded
+        } else {
+            Outcome::Ok
+        };
+        let elapsed = cycle_started.elapsed();
+        self.metrics.cycle(self.clock.now(), elapsed, outcome);
+        tracing::info!(
+            event = "cycle",
+            mode = mode.name(),
+            outcome = outcome.as_str(),
+            elapsed_ms = elapsed_ms(elapsed),
+            volume_key = cycle.volume_key.as_deref().unwrap_or("-"),
+            elevations = ?cycle.elevations,
+            radials = cycle.radials,
+            gates = cycle.gates,
+            alerts = cycle.alerts,
+            render_ms = cycle.render_ms,
+            frame_bytes = frame.bytes.len(),
+            frame_sha = frame.etag.trim_matches('"'),
+            degraded = cycle.degraded.as_deref().unwrap_or("-"),
+            "cycle complete"
+        );
+        Update::Published(frame)
+    }
+
+    fn fail(&mut self, now: DateTime<Utc>, mode: Mode, started: Instant, error: Error) -> Update {
+        let elapsed = started.elapsed();
+        self.metrics
+            .cycle(self.clock.now(), elapsed, Outcome::Failed);
+        tracing::warn!(
+            event = "cycle",
+            mode = mode.name(),
+            outcome = "failed",
+            elapsed_ms = elapsed_ms(elapsed),
+            error = %error,
+            "cycle failed"
+        );
+        tracing::error!("{} mode failed: {error}", mode.name());
+        self.state.cycle_failed(now, mode);
+        Update::Failed
+    }
+
+    /// Publish the state for handlers. A failure means no handler is
+    /// listening, which is fine: the updater is shutting down.
+    fn publish(&self) {
+        self.snapshots.send_replace(Arc::new(Snapshot {
+            state: self.state.clone(),
+        }));
+    }
+
+    fn persist(&self) {
+        if let Err(error) = self.state.save(&self.paths.state_file()) {
+            tracing::warn!(event = "state", error = %error, "could not persist state");
+        }
+    }
+}
+
+/// Refresh the radar-status sample when its TTL has passed. True when the mode
+/// changed.
+///
+/// The timestamps are recorded even when the request fails, so an outage is
+/// retried once per TTL instead of on every poll. A failure keeps the
+/// last-known-good status and the current mode.
+async fn update_mode(
+    state: &mut State,
+    sources: &Sources,
+    metrics: &Metrics,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    if now < state.status_next_attempt {
+        return Ok(false);
+    }
+
+    let started = Instant::now();
+    let status = sources.status.radar_status().await;
+    metrics.upstream(now, started.elapsed(), status.is_ok());
+
+    state.status_checked_at = now;
+    state.status_next_attempt = now + STATUS_TTL;
+
+    let status = status?;
+    tracing::info!("radar status: up={} vcp={}", status.up, status.vcp);
+    if !status.up {
+        tracing::error!("radar down");
+    } else if status.vcp == -1 {
+        tracing::error!("some issue with nws api");
+    }
+
+    // A change is accepted only after consecutive agreeing samples and a
+    // minimum dwell; the first sample after startup bootstraps the mode.
+    let changed = state.observe_status(status, now);
+    if changed {
+        tracing::info!(event = "mode", mode = state.mode.name(), "mode switched");
+    }
+    Ok(changed)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -164,10 +452,8 @@ async fn healthz() -> Response {
 
 async fn readyz(AxumState(app): AxumState<Arc<AppState>>) -> Response {
     let now = app.clock.now();
-    let (ready, reason) = {
-        let state = app.state.lock().await;
-        readiness(&state, now, setup::data_writable(&app.paths))
-    };
+    let snapshot = app.snapshot();
+    let (ready, reason) = readiness(&snapshot.state, now, setup::data_writable(&app.paths));
 
     if ready {
         text_response(StatusCode::OK, "ready\n")
@@ -182,51 +468,21 @@ async fn readyz(AxumState(app): AxumState<Arc<AppState>>) -> Response {
 async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
     let now = app.clock.now();
     let writable = setup::data_writable(&app.paths);
-    let (
-        fields,
-        mode,
-        manual_til,
-        last_updated,
-        frame,
-        last_attempt,
-        next_attempt,
-        failures,
-        radar_status,
-        status_checked_at,
-        radar_key,
-        radar_last_updated,
-        ready,
-        reason,
-    ) = {
-        let state = app.state.lock().await;
-        let (ready, reason) = readiness(&state, now, writable);
-        (
-            fields(&state, app.settings.timezone),
-            state.mode,
-            state.manual_til,
-            state.last_updated,
-            state.frame.clone(),
-            state.last_attempt,
-            state.next_attempt,
-            state.failures,
-            state.radar_status,
-            state.status_checked_at,
-            state.radar_key.clone(),
-            state.radar_last_updated,
-            ready,
-            reason,
-        )
-    };
+    let snapshot = app.snapshot();
+    let state = &snapshot.state;
 
-    let frame = match frame {
+    let (ready, reason) = readiness(state, now, writable);
+    let fields = fields(state, app.settings.timezone);
+
+    let frame = match state.frame.as_ref() {
         Some(frame) => json!({
             "available": true,
             "generated_at": timestamp(frame.generated_at),
             "age_seconds": age_seconds(now, frame.generated_at),
             "bytes": frame.bytes.len(),
-            "etag": frame.etag,
+            "etag": &frame.etag,
             "mode": frame.mode.map(Mode::name),
-            "degraded": frame.degraded,
+            "degraded": frame.degraded.as_deref(),
         }),
         None => json!({ "available": false }),
     };
@@ -235,22 +491,22 @@ async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
         "version": env!("CARGO_PKG_VERSION"),
         "started_at": app.metrics.started_at().and_then(timestamp),
         "uptime_seconds": app.metrics.started_at().map(|started| age_seconds(now, started)),
-        "mode": mode.name(),
+        "mode": state.mode.name(),
         "mode_select": fields.mode_select,
-        "manual_til": manual_til.and_then(timestamp),
-        "last_updated": timestamp(last_updated),
-        "last_attempt": timestamp(last_attempt),
-        "next_attempt": timestamp(next_attempt),
-        "failures": failures,
-        "radar_status": radar_status.map(|status| json!({
+        "manual_til": state.manual_til.and_then(timestamp),
+        "last_updated": timestamp(state.last_updated),
+        "last_attempt": timestamp(state.last_attempt),
+        "next_attempt": timestamp(state.next_attempt),
+        "failures": state.failures,
+        "radar_status": state.radar_status.map(|status| json!({
             "up": status.up,
             "vcp": status.vcp,
-            "checked_at": timestamp(status_checked_at),
-            "age_seconds": age_seconds(now, status_checked_at),
+            "checked_at": timestamp(state.status_checked_at),
+            "age_seconds": age_seconds(now, state.status_checked_at),
         })),
         "radar_volume": {
-            "key": radar_key,
-            "last_updated": timestamp(radar_last_updated),
+            "key": state.radar_key.as_deref(),
+            "last_updated": timestamp(state.radar_last_updated),
         },
         "ready": ready,
         "ready_reason": reason,
@@ -286,11 +542,7 @@ fn text_response(status: StatusCode, body: &str) -> Response {
 
 /// A ready process has published a frame that is no older than two mode
 /// intervals and can still write to `data/`.
-fn readiness(
-    state: &State,
-    now: chrono::DateTime<chrono::Utc>,
-    data_writable: bool,
-) -> (bool, &'static str) {
+fn readiness(state: &State, now: DateTime<Utc>, data_writable: bool) -> (bool, &'static str) {
     let Some(frame) = state.frame.as_ref() else {
         return (false, "no frame published");
     };
@@ -303,15 +555,15 @@ fn readiness(
     (true, "ready")
 }
 
-fn timestamp(time: chrono::DateTime<chrono::Utc>) -> Option<String> {
-    (time != chrono::DateTime::UNIX_EPOCH).then(|| time.to_rfc3339())
+fn timestamp(time: DateTime<Utc>) -> Option<String> {
+    (time != DateTime::UNIX_EPOCH).then(|| time.to_rfc3339())
 }
 
-fn age_seconds(now: chrono::DateTime<chrono::Utc>, then: chrono::DateTime<chrono::Utc>) -> i64 {
+fn age_seconds(now: DateTime<Utc>, then: DateTime<Utc>) -> i64 {
     now.signed_duration_since(then).num_seconds().max(0)
 }
 
-fn sample(sample: Option<Sample>, now: chrono::DateTime<chrono::Utc>) -> Value {
+fn sample(sample: Option<Sample>, now: DateTime<Utc>) -> Value {
     match sample {
         Some(sample) => json!({
             "at": sample.at.to_rfc3339(),
@@ -375,8 +627,8 @@ fn html<T: Template>(page: T) -> Response {
 }
 
 async fn index(AxumState(app): AxumState<Arc<AppState>>) -> Response {
-    let state = app.state.lock().await;
-    let fields = fields(&state, app.settings.timezone);
+    let snapshot = app.snapshot();
+    let fields = fields(&snapshot.state, app.settings.timezone);
 
     html(IndexPage {
         mode: fields.mode,
@@ -410,14 +662,12 @@ async fn settings(
         None => None,
     };
 
-    tracing::info!("Set mode select to {}", mode_select.name());
+    if !app.apply_settings(mode_select, requested_mode).await {
+        return text_response(StatusCode::SERVICE_UNAVAILABLE, "updater unavailable\n");
+    }
 
-    let mut state = app.state.lock().await;
-    state.apply_settings(mode_select, requested_mode, app.clock.now());
-    persist(&app.paths, &state);
-
-    let fields = fields(&state, app.settings.timezone);
-    drop(state);
+    let snapshot = app.snapshot();
+    let fields = fields(&snapshot.state, app.settings.timezone);
 
     html(SettingsPage {
         mode: fields.mode,
@@ -441,172 +691,29 @@ async fn frame(
         tracing::info!("debug param set, sending current output");
         // Prefer the published bytes so debug reads cannot observe a writer
         // midway through `frame.png`.
-        let published = app.state.lock().await.frame.clone();
-        if let Some(frame) = published {
+        if let Some(frame) = app.snapshot().state.frame.clone() {
             return frame.response(&headers);
         }
         return png_file(&app.paths.output_img()).await;
     }
 
-    let now = app.clock.now();
-    let mut state = app.state.lock().await;
-
-    tracing::info!("last updated: {}", state.last_updated);
-    tracing::info!("now: {now}");
-
-    if state.expire_manual(now) {
-        tracing::info!("manual mode expired");
-        persist(&app.paths, &state);
-    }
-
-    if state.mode_select == ModeSelect::Auto {
-        match app.update_mode(&mut state, now).await {
-            Ok(changed) => {
-                if changed {
-                    state.reschedule_now();
-                    persist(&app.paths, &state);
-                }
-            }
-            Err(error) => {
-                // A status outage must not block rendering or change the
-                // last known mode; the cycle below still runs on schedule.
-                tracing::error!("radar status: {error}");
+    match app.update().await {
+        Update::Published(frame) => frame.response(&headers),
+        Update::Failed => last_good(&app.snapshot().state, &headers),
+        Update::Skipped => {
+            let snapshot = app.snapshot();
+            if snapshot.state.failures > 0 {
+                // A cycle failed and the backoff has not elapsed. Keep serving
+                // the last good frame rather than a bare 304, so a client that
+                // restarted during the outage still gets a usable image.
+                last_good(&snapshot.state, &headers)
+            } else {
+                // The polling contract: no new frame is due, so tell the
+                // client to keep what it has. Include the tag for clients that
+                // track it.
+                not_modified(&snapshot.state)
             }
         }
-    } else {
-        tracing::info!("manual mode, maintaining state");
-    }
-
-    if state.cycle_due(now) {
-        let deps = Deps {
-            paths: &app.paths,
-            settings: &app.settings,
-            engine: &app.engine,
-            forecast: app.sources.forecast.as_ref(),
-            alerts: app.sources.alerts.as_ref(),
-            radar: app.radar.as_ref(),
-            metrics: &app.metrics,
-            now,
-        };
-
-        let mode = state.mode;
-        let cycle_started = Instant::now();
-        let cycle =
-            match tokio::time::timeout(CYCLE_DEADLINE, modes::run(mode, &deps, &mut state)).await {
-                Ok(result) => result,
-                Err(_) => Err(Error::new(format!(
-                    "cycle exceeded the {} s deadline",
-                    CYCLE_DEADLINE.as_secs()
-                ))),
-            };
-        let cycle = match cycle {
-            Ok(cycle) => cycle,
-            Err(error) => {
-                let elapsed = cycle_started.elapsed();
-                app.metrics.cycle(app.clock.now(), elapsed, Outcome::Failed);
-                tracing::warn!(
-                    event = "cycle",
-                    mode = mode.name(),
-                    outcome = "failed",
-                    elapsed_ms = elapsed_ms(elapsed),
-                    error = %error,
-                    "cycle failed"
-                );
-                tracing::error!("{} mode failed: {error}", mode.name());
-                state.cycle_failed(now, mode);
-                persist(&app.paths, &state);
-                return last_good(&state, &headers);
-            }
-        };
-
-        let frame = match std::fs::read(app.paths.output_img()) {
-            Ok(bytes) => {
-                match PublishedFrame::new(bytes, now, Some(mode), cycle.degraded.clone()) {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        let elapsed = cycle_started.elapsed();
-                        app.metrics.cycle(app.clock.now(), elapsed, Outcome::Failed);
-                        tracing::warn!(
-                            event = "cycle",
-                            mode = mode.name(),
-                            outcome = "failed",
-                            elapsed_ms = elapsed_ms(elapsed),
-                            error = %error,
-                            "cycle failed"
-                        );
-                        tracing::error!("{}: {error}", app.paths.output_img().display());
-                        state.cycle_failed(now, mode);
-                        persist(&app.paths, &state);
-                        return last_good(&state, &headers);
-                    }
-                }
-            }
-            Err(error) => {
-                let elapsed = cycle_started.elapsed();
-                app.metrics.cycle(app.clock.now(), elapsed, Outcome::Failed);
-                tracing::warn!(
-                    event = "cycle",
-                    mode = mode.name(),
-                    outcome = "failed",
-                    elapsed_ms = elapsed_ms(elapsed),
-                    error = %error,
-                    "cycle failed"
-                );
-                tracing::error!("{}: {error}", app.paths.output_img().display());
-                state.cycle_failed(now, mode);
-                persist(&app.paths, &state);
-                return last_good(&state, &headers);
-            }
-        };
-
-        let frame = Arc::new(frame);
-        state.cycle_succeeded(now, mode);
-        state.frame = Some(Arc::clone(&frame));
-        persist(&app.paths, &state);
-        drop(state);
-
-        let outcome = if cycle.degraded.is_some() {
-            Outcome::Degraded
-        } else {
-            Outcome::Ok
-        };
-        let elapsed = cycle_started.elapsed();
-        app.metrics.cycle(app.clock.now(), elapsed, outcome);
-        tracing::info!(
-            event = "cycle",
-            mode = mode.name(),
-            outcome = outcome.as_str(),
-            elapsed_ms = elapsed_ms(elapsed),
-            volume_key = cycle.volume_key.as_deref().unwrap_or("-"),
-            elevations = ?cycle.elevations,
-            radials = cycle.radials,
-            gates = cycle.gates,
-            alerts = cycle.alerts,
-            render_ms = cycle.render_ms,
-            frame_bytes = frame.bytes.len(),
-            frame_sha = frame.etag.trim_matches('"'),
-            degraded = cycle.degraded.as_deref().unwrap_or("-"),
-            "cycle complete"
-        );
-        frame.response(&headers)
-    } else if state.failures > 0 {
-        // A cycle failed and the backoff has not elapsed. Keep serving the
-        // last good frame rather than a bare 304, so a client that restarted
-        // during the outage still gets a usable image.
-        last_good(&state, &headers)
-    } else {
-        // The polling contract: no new frame is due, so tell the client to
-        // keep what it has. Include the tag for clients that track it.
-        let etag = state.frame.as_ref().map(|frame| frame.etag.clone());
-        drop(state);
-
-        let mut response = StatusCode::NOT_MODIFIED.into_response();
-        if let Some(etag) = etag {
-            if let Ok(value) = HeaderValue::from_str(&etag) {
-                response.headers_mut().insert(header::ETAG, value);
-            }
-        }
-        response
     }
 }
 
@@ -625,6 +732,18 @@ fn last_good(state: &State, headers: &HeaderMap) -> Response {
         )
             .into_response(),
     }
+}
+
+fn not_modified(state: &State) -> Response {
+    let mut response = StatusCode::NOT_MODIFIED.into_response();
+    if let Some(etag) = state
+        .frame
+        .as_ref()
+        .and_then(|frame| HeaderValue::from_str(&frame.etag).ok())
+    {
+        response.headers_mut().insert(header::ETAG, etag);
+    }
+    response
 }
 
 async fn png_file(path: &std::path::Path) -> Response {
