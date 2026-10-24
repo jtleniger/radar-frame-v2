@@ -1,6 +1,7 @@
 //! Command-line parsing and dispatch. Each command group lives in its own
 //! module; this file owns the shared setup helpers and the entry point.
 
+mod check;
 mod render;
 mod serve;
 mod view;
@@ -31,7 +32,10 @@ enum Command {
     Serve(serve::Serve),
     /// Create the data directory, palette, and street mask
     Setup(Setup),
-    /// Render frames for inspection
+    /// Check a live or mocked data path end to end
+    #[command(subcommand)]
+    Check(check::CheckCommand),
+    /// Low-level rendering and fixture tools
     #[command(subcommand)]
     Render(render::RenderCommand),
     /// Compose e-ink frames and write the palette
@@ -70,7 +74,7 @@ pub(super) fn http_client(config: &Config) -> Result<reqwest::Client> {
 
 pub(super) fn sources(config: &Config, client: &reqwest::Client, mock: bool) -> Sources {
     if mock {
-        Sources::from_provider(Arc::new(MockProvider::new()))
+        Sources::from_provider(Arc::new(MockProvider::demo()))
     } else {
         Sources::from_provider(Arc::new(OnlineProvider::new(
             client.clone(),
@@ -94,6 +98,7 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Serve(args) => serve::serve(args).await,
         Command::Setup(args) => setup_command(args).await,
+        Command::Check(command) => check::run(command).await,
         Command::Render(command) => render::run(command).await,
         Command::View(command) => view::run(command),
     }

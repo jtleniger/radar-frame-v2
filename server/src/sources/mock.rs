@@ -1,18 +1,45 @@
 //! Offline data, ported value for value from `sources/mock_forecast.py`.
 
 use async_trait::async_trait;
+use chrono::{Duration, Utc};
 
 use super::{AlertSource, Forecast, ForecastSource, RadarStatus, RadarStatusSource};
 use crate::error::Result;
-use crate::view::forecast::{Alert, CurrentConditions, ForecastDay, ForecastHour};
+use crate::view::forecast::{Alert, AlertLevel, CurrentConditions, ForecastDay, ForecastHour};
 
 pub struct MockProvider {
     forecast: Forecast,
+    alerts: Vec<Alert>,
 }
 
 impl MockProvider {
+    /// The frozen forecast with no alerts, matching the fixture goldens.
     pub fn new() -> Self {
+        Self::with_alerts(Vec::new())
+    }
+
+    /// The frozen forecast plus three alerts that are active right now, for
+    /// checking the warning bar and the alert pipeline offline.
+    pub fn demo() -> Self {
+        let now = Utc::now();
+        let alert = |event: &str, level: AlertLevel, expires_minutes: i64| Alert {
+            event: event.into(),
+            level,
+            status: "actual".into(),
+            effective: (now - Duration::minutes(15)).fixed_offset(),
+            expires: (now + Duration::minutes(expires_minutes)).fixed_offset(),
+        };
+
+        Self::with_alerts(vec![
+            alert("tornado warning", AlertLevel::Emergency, 30),
+            alert("severe thunderstorm warning", AlertLevel::Warning, 45),
+            alert("flash flood watch", AlertLevel::Watch, 180),
+        ])
+    }
+
+    pub fn with_alerts(alerts: Vec<Alert>) -> Self {
         MockProvider {
+            alerts,
             forecast: Forecast {
                 current: CurrentConditions {
                     temp_f: 101.0,
@@ -132,6 +159,11 @@ impl MockProvider {
     pub fn forecast_data(&self) -> &Forecast {
         &self.forecast
     }
+
+    /// The configured alerts, for `check warnings --mock`.
+    pub fn alerts_data(&self) -> &[Alert] {
+        &self.alerts
+    }
 }
 
 impl Default for MockProvider {
@@ -150,7 +182,7 @@ impl ForecastSource for MockProvider {
 #[async_trait]
 impl AlertSource for MockProvider {
     async fn alerts(&self) -> Result<Vec<Alert>> {
-        Ok(Vec::new())
+        Ok(self.alerts.clone())
     }
 }
 

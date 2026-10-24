@@ -20,7 +20,7 @@ use super::{context, http_client, init_logging, sources};
 pub struct Serve {
     #[arg(long, default_value = "0.0.0.0:8000")]
     bind: SocketAddr,
-    /// Use mock forecast data
+    /// Use the built-in mock forecast and alerts
     #[arg(long)]
     mock: bool,
 }
