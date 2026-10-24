@@ -626,7 +626,7 @@ Commands:
 | `frame-render streets` | `radar-frame render streets` |
 | `frame-view storm\|clear\|palette` | `radar-frame view storm\|clear\|palette` |
 | `radar-frame render-volume` | `radar-frame render volume` |
-| `radar-frame render-clear\|render-storm` | `radar-frame render clear\|storm` |
+| `radar-frame render-clear\|render-storm` | `radar-frame check clear\|radar` |
 | `radar-frame serve\|setup` | unchanged |
 | `frame-render radar` | removed |
 | `nexrad-geojson` | removed |
@@ -642,7 +642,7 @@ and `ExecStart=/opt/radar-frame/bin/radar-frame serve`. The upgrade path moves
 installs the new binary and unit, then restarts. Both sequences are in
 `server/README.md`.
 
-Tests are consolidated into `tests/{api,render,view}.rs` with fixtures under
+Tests are consolidated into `tests/{api,cli,render,view}.rs` with fixtures under
 `tests/fixtures/{api,nexrad,frame,view}/`; the fixture READMEs are deleted and
 their provenance is recorded in `server/README.md`.
 

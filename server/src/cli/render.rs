@@ -9,24 +9,15 @@ use crate::config::Settings;
 use crate::error::Result;
 use crate::service::clock::{Clock, SystemClock};
 use crate::service::engine::{Engine, Renderer};
-use crate::service::modes::{self, Deps};
 use crate::service::setup;
-use crate::sources::nexrad::S3Radar;
 use crate::sources::osm::Overpass;
-use crate::sources::RadarSource;
-use crate::state::{Mode, State};
-use crate::telemetry::metrics::Metrics;
 
-use super::{context, http_client, init_logging, sources};
+use super::{context, http_client, init_logging};
 
 #[derive(Subcommand)]
 pub enum RenderCommand {
     /// Render the radar and e-ink frames from a local Archive II volume
     Volume(RenderVolume),
-    /// Render the storm e-ink frame from the latest NEXRAD volume
-    Storm(MockArgs),
-    /// Render the clear-sky e-ink frame
-    Clear(MockArgs),
     /// Render a radar frame straight from an Archive II volume
     Archive(ArchiveArgs),
     /// Rasterize OSM highway ways into an 8-bit street mask PNG
@@ -44,13 +35,6 @@ pub(super) struct RenderVolume {
     /// Re-download and re-rasterize the street mask
     #[arg(long)]
     force_streets: bool,
-}
-
-#[derive(Args)]
-pub(super) struct MockArgs {
-    /// Use mock forecast data
-    #[arg(long)]
-    mock: bool,
 }
 
 #[derive(Args)]
@@ -114,8 +98,6 @@ pub(super) struct StreetsArgs {
 pub async fn run(command: RenderCommand) -> Result<()> {
     match command {
         RenderCommand::Volume(args) => render_volume(args).await,
-        RenderCommand::Storm(args) => render_storm(args).await,
-        RenderCommand::Clear(args) => render_clear(args).await,
         RenderCommand::Archive(args) => render_archive(args),
         RenderCommand::Streets(args) => render_streets(args),
     }
@@ -165,51 +147,6 @@ async fn render_volume(args: RenderVolume) -> Result<()> {
     println!("radar frame: {}", paths.radar_img().display());
     println!("e-ink frame: {}", paths.output_img().display());
     Ok(())
-}
-
-async fn render_clear(args: MockArgs) -> Result<()> {
-    let (paths, config) = context()?;
-    init_logging(&paths, &config);
-
-    let client = http_client(&config)?;
-    let sources = sources(&config, &client, args.mock);
-    let forecast = sources.forecast.forecast().await?;
-    let alerts = sources.alerts.alerts().await?;
-
-    let settings = Settings::from_config(&config)?;
-    let engine = Engine::new(paths, &settings);
-    let now = SystemClock.now();
-    tokio::task::spawn_blocking(move || engine.render_clear(&forecast, &alerts, now))
-        .await
-        .map_err(|e| crate::error::Error::render(format!("render task: {e}")))??;
-
-    Ok(())
-}
-
-async fn render_storm(args: MockArgs) -> Result<()> {
-    let (paths, config) = context()?;
-    init_logging(&paths, &config);
-
-    let client = http_client(&config)?;
-    let radar: Arc<dyn RadarSource> = Arc::new(S3Radar::new(client.clone()));
-    let settings = Settings::from_config(&config)?;
-    let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &settings));
-    let sources = sources(&config, &client, args.mock);
-
-    let mut state = State::new();
-    let now = SystemClock.now();
-    let metrics = Metrics::new(now);
-    let deps = Deps {
-        paths: &paths,
-        settings: &settings,
-        engine: &engine,
-        forecast: sources.forecast.as_ref(),
-        alerts: sources.alerts.as_ref(),
-        radar: radar.as_ref(),
-        metrics: &metrics,
-        now,
-    };
-    modes::run(Mode::Storm, &deps, &mut state).await.map(|_| ())
 }
 
 fn render_archive(args: ArchiveArgs) -> Result<()> {
