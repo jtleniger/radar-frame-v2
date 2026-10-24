@@ -4,6 +4,8 @@
 //! two HTTP operations: a ListObjectsV2 query for the day's prefix and a plain
 //! GET of the selected key.
 
+use std::time::Instant;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, Utc};
 use quick_xml::events::Event;
@@ -12,7 +14,7 @@ use quick_xml::Reader;
 use super::{Object, RadarSource};
 use crate::error::{Error, Result};
 
-const BASE_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com";
+pub const BASE_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const BUCKET_PREFIX: &str = "unidata-nexrad-level2";
 
 pub struct S3Radar {
@@ -28,18 +30,67 @@ impl S3Radar {
         let url = format!("{BASE_URL}/");
         tracing::info!("s3 list: {BUCKET_PREFIX}/{prefix}");
 
-        let response = self
+        let started = Instant::now();
+        let response = match self
             .client
             .get(url)
             .query(&[("list-type", "2"), ("prefix", prefix)])
             .send()
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!(
+                    event = "upstream",
+                    source = "s3-list",
+                    status = 0,
+                    elapsed_ms = elapsed_ms(started),
+                    bytes = 0,
+                    error_kind = "transport",
+                    "upstream request failed"
+                );
+                return Err(error.into());
+            }
+        };
 
         let status = response.status();
-        let body = response.text().await?;
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::warn!(
+                    event = "upstream",
+                    source = "s3-list",
+                    status = status.as_u16(),
+                    elapsed_ms = elapsed_ms(started),
+                    bytes = 0,
+                    error_kind = "body",
+                    "upstream response rejected"
+                );
+                return Err(error.into());
+            }
+        };
+        let elapsed = elapsed_ms(started);
         if !status.is_success() {
+            tracing::warn!(
+                event = "upstream",
+                source = "s3-list",
+                status = status.as_u16(),
+                elapsed_ms = elapsed,
+                bytes = body.len(),
+                error_kind = "status",
+                "upstream request failed"
+            );
             return Err(Error(format!("s3 list {prefix}: {status}: {body}")));
         }
+
+        tracing::info!(
+            event = "upstream",
+            source = "s3-list",
+            status = status.as_u16(),
+            elapsed_ms = elapsed,
+            bytes = body.len(),
+            "upstream request"
+        );
 
         parse_list(&body)
     }
@@ -48,19 +99,73 @@ impl S3Radar {
         let url = format!("{BASE_URL}/{key}");
         tracing::info!("s3 get: {key}");
 
-        let response = self.client.get(url.clone()).send().await?;
+        let started = Instant::now();
+        let response = match self.client.get(url.clone()).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!(
+                    event = "upstream",
+                    source = "s3-get",
+                    status = 0,
+                    elapsed_ms = elapsed_ms(started),
+                    bytes = 0,
+                    error_kind = "transport",
+                    "upstream request failed"
+                );
+                return Err(error.into());
+            }
+        };
+
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            tracing::warn!(
+                event = "upstream",
+                source = "s3-get",
+                status = status.as_u16(),
+                elapsed_ms = elapsed_ms(started),
+                bytes = body.len(),
+                error_kind = "status",
+                "upstream request failed"
+            );
             return Err(Error(format!("{url}: {status}: {body}")));
         }
 
-        Ok(response.bytes().await?.to_vec())
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(
+                    event = "upstream",
+                    source = "s3-get",
+                    status = status.as_u16(),
+                    elapsed_ms = elapsed_ms(started),
+                    bytes = 0,
+                    error_kind = "body",
+                    "upstream response rejected"
+                );
+                return Err(error.into());
+            }
+        };
+
+        tracing::info!(
+            event = "upstream",
+            source = "s3-get",
+            status = status.as_u16(),
+            elapsed_ms = elapsed_ms(started),
+            bytes = bytes.len(),
+            "upstream request"
+        );
+
+        Ok(bytes.to_vec())
     }
 }
 
 fn day_prefix(now: DateTime<Utc>) -> String {
     format!("{:04}/{:02}/{:02}", now.year(), now.month(), now.day())
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[async_trait]

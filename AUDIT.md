@@ -107,12 +107,12 @@ ID form: `<category>.<finding>.<action>`.
 | [x] | 1.6.1 | Distinguish `404`/`500` in `png_file` |
 | [ ] | 1.6.2 | Handle logging init/rotation failures |
 | [ ] | 1.6.3 | Add client request timeout |
-| [ ] | 2.1.1 | Add `/healthz`, `/readyz`, `/status` |
-| [ ] | 2.2.1 | Structured per-cycle and per-upstream logs |
-| [ ] | 2.2.2 | Expose counters/ages in `/status` |
+| [x] | 2.1.1 | Add `/healthz`, `/readyz`, `/status` |
+| [x] | 2.2.1 | Structured per-cycle and per-upstream logs |
+| [x] | 2.2.2 | Expose counters/ages in `/status` |
 | [rejected] | ~~2.3.1~~ | ~~stdout + journald, `RUST_LOG`, 7–14 day retention~~ |
-| [ ] | 2.4.1 | Startup summary log |
-| [ ] | 2.4.2 | Per-cycle frame provenance log |
+| [x] | 2.4.1 | Startup summary log |
+| [x] | 2.4.2 | Per-cycle frame provenance log |
 | [ ] | 3.1.1 | TTL-cache radar status with single-flight |
 | [ ] | 3.2.1 | Backoff + jitter with `last_attempt`/`next_attempt` |
 | [ ] | 3.2.2 | Per-source last-known-good cache |

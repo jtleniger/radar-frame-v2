@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::view::forecast::{Alert, AlertLevel};
 
-const BASE_URL: &str = "https://api.weather.gov/";
+pub const BASE_URL: &str = "https://api.weather.gov/";
 
 #[derive(Deserialize)]
 struct AlertsResponse {

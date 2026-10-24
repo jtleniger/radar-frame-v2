@@ -101,6 +101,7 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
     let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &config).unwrap());
     let provider = CountingProvider::new();
     let radar = NoRadar;
+    let metrics = radar_frame::metrics::Metrics::new(now());
     let mut state = State::new();
 
     let mut frames = Vec::new();
@@ -111,6 +112,7 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
             engine: &engine,
             provider: &provider,
             radar: &radar,
+            metrics: &metrics,
             now: now(),
         };
         modes::run(Mode::Clear, &deps, &mut state).await.unwrap();

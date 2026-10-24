@@ -4,16 +4,19 @@
 //! polling contract and the auto/manual state machine.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use askama::Template;
 use axum::extract::{Form, Query, State as AxumState};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::Duration;
 use chrono_tz::Tz;
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::clock::Clock;
@@ -21,8 +24,10 @@ use crate::config::Config;
 use crate::engine::Renderer;
 use crate::error::{Error, Result};
 use crate::frame::PublishedFrame;
+use crate::metrics::{elapsed_ms, Metrics, Outcome, Sample};
 use crate::modes::{self, Deps};
 use crate::paths::Paths;
+use crate::setup;
 use crate::sources::{ForecastProvider, RadarSource};
 use crate::state::{Mode, ModeSelect, State};
 
@@ -34,6 +39,7 @@ pub struct AppState {
     pub provider: Arc<dyn ForecastProvider>,
     pub radar: Arc<dyn RadarSource>,
     pub engine: Arc<dyn Renderer>,
+    pub metrics: Metrics,
     pub state: Mutex<State>,
 }
 
@@ -47,6 +53,7 @@ impl AppState {
         engine: Arc<dyn Renderer>,
     ) -> Result<Self> {
         let timezone = config.timezone("forecast", "timezone")?;
+        let started_at = clock.now();
 
         // A frame left by the previous process is still the last good one;
         // publish it so the first poll survives an upstream outage.
@@ -61,6 +68,7 @@ impl AppState {
             provider,
             radar,
             engine,
+            metrics: Metrics::new(started_at),
             state: Mutex::new(state),
         })
     }
@@ -68,7 +76,11 @@ impl AppState {
     /// Swap the mode from the NWS radar status. True when it changed.
     async fn update_mode(&self, state: &mut State) -> Result<bool> {
         let previous = state.mode;
-        let status = self.provider.radar_status().await?;
+        let started = Instant::now();
+        let status = self.provider.radar_status().await;
+        self.metrics
+            .upstream(self.clock.now(), started.elapsed(), status.is_ok());
+        let status = status?;
 
         tracing::info!("radar status: up={} vcp={}", status.up, status.vcp);
 
@@ -93,8 +105,154 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(index))
         .route("/settings", post(settings))
         .route("/frame", get(frame))
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/status", get(status))
         .route("/static/style.css", get(stylesheet))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            count_request,
+        ))
         .with_state(state)
+}
+
+async fn count_request(
+    AxumState(app): AxumState<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    app.metrics.request();
+    next.run(request).await
+}
+
+async fn healthz() -> Response {
+    text_response(StatusCode::OK, "ok\n")
+}
+
+async fn readyz(AxumState(app): AxumState<Arc<AppState>>) -> Response {
+    let now = app.clock.now();
+    let (ready, reason) = {
+        let state = app.state.lock().await;
+        readiness(&state, now, setup::data_writable(&app.paths))
+    };
+
+    if ready {
+        text_response(StatusCode::OK, "ready\n")
+    } else {
+        text_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("not ready: {reason}\n"),
+        )
+    }
+}
+
+async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
+    let now = app.clock.now();
+    let writable = setup::data_writable(&app.paths);
+    let (fields, mode, manual_til, last_updated, frame, ready, reason) = {
+        let state = app.state.lock().await;
+        let (ready, reason) = readiness(&state, now, writable);
+        (
+            fields(&state, app.timezone),
+            state.mode,
+            state.manual_til,
+            state.last_updated,
+            state.frame.clone(),
+            ready,
+            reason,
+        )
+    };
+
+    let frame = match frame {
+        Some(frame) => json!({
+            "available": true,
+            "generated_at": timestamp(frame.generated_at),
+            "age_seconds": age_seconds(now, frame.generated_at),
+            "bytes": frame.bytes.len(),
+            "etag": frame.etag,
+            "mode": frame.mode.map(Mode::name),
+            "degraded": frame.degraded,
+        }),
+        None => json!({ "available": false }),
+    };
+
+    let body = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "started_at": app.metrics.started_at().and_then(timestamp),
+        "uptime_seconds": app.metrics.started_at().map(|started| age_seconds(now, started)),
+        "mode": mode.name(),
+        "mode_select": fields.mode_select,
+        "manual_til": manual_til.and_then(timestamp),
+        "last_updated": timestamp(last_updated),
+        "ready": ready,
+        "ready_reason": reason,
+        "data_writable": writable,
+        "frame": frame,
+        "counters": {
+            "requests_total": app.metrics.requests_total(),
+            "cycles_total": app.metrics.cycles_total(),
+            "cycles_failed": app.metrics.cycles_failed(),
+            "cycles_degraded": app.metrics.cycles_degraded(),
+            "upstream_total": app.metrics.upstream_total(),
+            "upstream_failed": app.metrics.upstream_failed(),
+        },
+        "last_cycle": sample(app.metrics.last_cycle(), now),
+        "last_upstream": sample(app.metrics.last_upstream(), now),
+    });
+
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string()),
+    )
+        .into_response()
+}
+
+fn text_response(status: StatusCode, body: &str) -> Response {
+    let mut response = (status, body.to_string()).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    response
+}
+
+/// A ready process has published a frame that is no older than two mode
+/// intervals and can still write to `data/`.
+fn readiness(
+    state: &State,
+    now: chrono::DateTime<chrono::Utc>,
+    data_writable: bool,
+) -> (bool, &'static str) {
+    let Some(frame) = state.frame.as_ref() else {
+        return (false, "no frame published");
+    };
+    if now.signed_duration_since(frame.generated_at) > state.mode.interval() * 2 {
+        return (false, "frame is stale");
+    }
+    if !data_writable {
+        return (false, "data directory is not writable");
+    }
+    (true, "ready")
+}
+
+fn timestamp(time: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    (time != chrono::DateTime::UNIX_EPOCH).then(|| time.to_rfc3339())
+}
+
+fn age_seconds(now: chrono::DateTime<chrono::Utc>, then: chrono::DateTime<chrono::Utc>) -> i64 {
+    now.signed_duration_since(then).num_seconds().max(0)
+}
+
+fn sample(sample: Option<Sample>, now: chrono::DateTime<chrono::Utc>) -> Value {
+    match sample {
+        Some(sample) => json!({
+            "at": sample.at.to_rfc3339(),
+            "age_seconds": age_seconds(now, sample.at),
+            "elapsed_ms": sample.elapsed_ms,
+            "outcome": sample.outcome.as_str(),
+        }),
+        None => Value::Null,
+    }
 }
 
 struct Fields {
@@ -273,27 +431,61 @@ async fn frame(
             engine: &app.engine,
             provider: app.provider.as_ref(),
             radar: app.radar.as_ref(),
+            metrics: &app.metrics,
             now,
         };
 
         let mode = state.mode;
+        let cycle_started = Instant::now();
         let cycle = match modes::run(mode, &deps, &mut state).await {
             Ok(cycle) => cycle,
             Err(error) => {
+                let elapsed = cycle_started.elapsed();
+                app.metrics.cycle(app.clock.now(), elapsed, Outcome::Failed);
+                tracing::warn!(
+                    event = "cycle",
+                    mode = mode.name(),
+                    outcome = "failed",
+                    elapsed_ms = elapsed_ms(elapsed),
+                    error = %error,
+                    "cycle failed"
+                );
                 tracing::error!("{} mode failed: {error}", mode.name());
                 return last_good(&state, &headers);
             }
         };
 
         let frame = match std::fs::read(app.paths.output_img()) {
-            Ok(bytes) => match PublishedFrame::new(bytes, now, Some(mode), cycle.degraded) {
-                Ok(frame) => frame,
-                Err(error) => {
-                    tracing::error!("{}: {error}", app.paths.output_img().display());
-                    return last_good(&state, &headers);
+            Ok(bytes) => {
+                match PublishedFrame::new(bytes, now, Some(mode), cycle.degraded.clone()) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        let elapsed = cycle_started.elapsed();
+                        app.metrics.cycle(app.clock.now(), elapsed, Outcome::Failed);
+                        tracing::warn!(
+                            event = "cycle",
+                            mode = mode.name(),
+                            outcome = "failed",
+                            elapsed_ms = elapsed_ms(elapsed),
+                            error = %error,
+                            "cycle failed"
+                        );
+                        tracing::error!("{}: {error}", app.paths.output_img().display());
+                        return last_good(&state, &headers);
+                    }
                 }
-            },
+            }
             Err(error) => {
+                let elapsed = cycle_started.elapsed();
+                app.metrics.cycle(app.clock.now(), elapsed, Outcome::Failed);
+                tracing::warn!(
+                    event = "cycle",
+                    mode = mode.name(),
+                    outcome = "failed",
+                    elapsed_ms = elapsed_ms(elapsed),
+                    error = %error,
+                    "cycle failed"
+                );
                 tracing::error!("{}: {error}", app.paths.output_img().display());
                 return last_good(&state, &headers);
             }
@@ -304,11 +496,28 @@ async fn frame(
         state.frame = Some(Arc::clone(&frame));
         drop(state);
 
+        let outcome = if cycle.degraded.is_some() {
+            Outcome::Degraded
+        } else {
+            Outcome::Ok
+        };
+        let elapsed = cycle_started.elapsed();
+        app.metrics.cycle(app.clock.now(), elapsed, outcome);
         tracing::info!(
-            "published frame: mode={} bytes={} degraded={:?}",
-            mode.name(),
-            frame.bytes.len(),
-            frame.degraded
+            event = "cycle",
+            mode = mode.name(),
+            outcome = outcome.as_str(),
+            elapsed_ms = elapsed_ms(elapsed),
+            volume_key = cycle.volume_key.as_deref().unwrap_or("-"),
+            elevations = ?cycle.elevations,
+            radials = cycle.radials,
+            gates = cycle.gates,
+            alerts = cycle.alerts,
+            render_ms = cycle.render_ms,
+            frame_bytes = frame.bytes.len(),
+            frame_sha = frame.etag.trim_matches('"'),
+            degraded = cycle.degraded.as_deref().unwrap_or("-"),
+            "cycle complete"
         );
         frame.response(&headers)
     } else {
