@@ -1,4 +1,5 @@
-//! The two render modes, ported from `modes/storm.py` and `modes/clear.py`.
+//! The render modes: storm and clear from the weather pipeline, and photos
+//! from the `photos/` directory.
 
 use std::fs;
 use std::io;
@@ -46,12 +47,15 @@ pub struct Cycle {
     pub gates: usize,
     pub alerts: usize,
     pub render_ms: u64,
+    /// File name of the photo published by a [`Mode::Photo`] cycle.
+    pub photo: Option<String>,
 }
 
 pub async fn run(mode: Mode, services: &Services<'_>, state: &mut State) -> Result<Cycle> {
     match mode {
         Mode::Storm => storm(services, state).await,
         Mode::Clear => clear(services, state).await,
+        Mode::Photo => photo(services, state).await,
     }
 }
 
@@ -197,6 +201,86 @@ async fn clear(services: &Services<'_>, state: &mut State) -> Result<Cycle> {
     .await?;
     cycle.render_ms += elapsed_ms(started.elapsed());
     Ok(cycle)
+}
+
+/// Show the next photo in name order, wrapping after the last one.
+///
+/// Invalid entries are skipped and the next candidate is tried, so one bad
+/// drop cannot stop the rotation. A missing or empty directory, or a directory
+/// with no usable 800x480 PNGs, fails the cycle and leaves the last frame up.
+async fn photo(services: &Services<'_>, state: &mut State) -> Result<Cycle> {
+    let dir = services.paths.photos_dir();
+    let names = photo_files(&dir)?;
+    if names.is_empty() {
+        return Err(Error::render(format!(
+            "photo: no .png files in {}",
+            dir.display()
+        )));
+    }
+
+    let start = state
+        .photo_last
+        .as_deref()
+        .map(|last| names.partition_point(|name| name.as_str() <= last) % names.len())
+        .unwrap_or(0);
+
+    let mut cycle = Cycle::default();
+    let mut rejected = Vec::new();
+    for offset in 0..names.len() {
+        let name = &names[(start + offset) % names.len()];
+        let path = dir.join(name);
+        let started = Instant::now();
+        let rendered = render(Arc::clone(services.renderer), {
+            let path = path.clone();
+            move |renderer| renderer.render_photo(&path)
+        })
+        .await;
+        cycle.render_ms += elapsed_ms(started.elapsed());
+
+        match rendered {
+            Ok(()) => {
+                tracing::info!("showing photo {}", path.display());
+                cycle.photo = Some(name.clone());
+                state.photo_last = Some(name.clone());
+                return Ok(cycle);
+            }
+            Err(error) => {
+                tracing::warn!("skipping photo {}: {error}", path.display());
+                rejected.push(format!("{name}: {error}"));
+            }
+        }
+    }
+
+    Err(Error::render(format!(
+        "photo: no usable 800x480 PNG in {} ({})",
+        dir.display(),
+        rejected.join("; ")
+    )))
+}
+
+/// PNG file names in the photo directory, sorted for a stable rotation.
+fn photo_files(dir: &Path) -> Result<Vec<String>> {
+    let entries = fs::read_dir(dir).map_err(|error| Error::io_path(dir, &error))?;
+    let mut names = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|error| Error::io_path(dir, &error))?;
+        let path = entry.path();
+        if !path.is_file()
+            || !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            names.push(name.to_string());
+        }
+    }
+
+    names.sort();
+    Ok(names)
 }
 
 /// Fetch the forecast, falling back to the last good one when the upstream

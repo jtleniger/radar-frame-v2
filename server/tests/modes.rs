@@ -17,7 +17,8 @@ use radar_frame::sources::{
 };
 use radar_frame::state::{Mode, State};
 use radar_frame::view::forecast::Alert;
-use radar_frame::view::palette::write_eink_png;
+use radar_frame::view::image::Image;
+use radar_frame::view::palette::{write_eink_png, EINK_COLORS};
 
 const CONFIG: &str = "\
 [radar]
@@ -157,6 +158,10 @@ impl Renderer for FailingRenderer {
         _now: DateTime<Utc>,
     ) -> radar_frame::error::Result<()> {
         unreachable!("a rejected volume never reaches the clear view")
+    }
+
+    fn render_photo(&self, _photo: &std::path::Path) -> radar_frame::error::Result<()> {
+        unreachable!("a rejected volume never reaches the photo view")
     }
 }
 
@@ -327,6 +332,10 @@ impl Renderer for RecordingRenderer {
     ) -> radar_frame::error::Result<()> {
         Ok(())
     }
+
+    fn render_photo(&self, _photo: &std::path::Path) -> radar_frame::error::Result<()> {
+        unreachable!("photo mode is not exercised here")
+    }
 }
 
 /// Run one Storm cycle against a radar source that must fail, with a volume
@@ -376,4 +385,153 @@ async fn listing_failure_uses_the_last_good_volume() {
 #[tokio::test]
 async fn download_failure_uses_the_last_good_volume() {
     storm_with_failing_radar(&DownloadFails).await;
+}
+
+fn write_photo(path: &std::path::Path, base: [u8; 3]) {
+    let mut image = Image::new(800, 480, [0, 0, 0, 255]);
+    for y in 0..480u32 {
+        for x in 0..800u32 {
+            let ramp = (x * 255 / 799) as u8;
+            image.put_pixel(
+                x as i64,
+                y as i64,
+                [
+                    base[0].wrapping_add(ramp),
+                    base[1].wrapping_add(ramp),
+                    base[2].wrapping_add(ramp),
+                    255,
+                ],
+            );
+        }
+    }
+    image.write_png(path).unwrap();
+}
+
+#[tokio::test]
+async fn photo_mode_rotates_in_name_order_and_dithers() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    std::fs::create_dir_all(paths.data_dir()).unwrap();
+    std::fs::create_dir_all(paths.photos_dir()).unwrap();
+    write_eink_png(&paths.palette_img()).unwrap();
+    write_photo(&paths.photos_dir().join("b.png"), [0, 0, 0]);
+    write_photo(&paths.photos_dir().join("a.png"), [200, 30, 30]);
+    write_photo(&paths.photos_dir().join("c.png"), [30, 30, 200]);
+
+    let config = Config::parse(CONFIG).unwrap();
+    let settings = Settings::from_config(&config).unwrap();
+    let renderer: Arc<dyn Renderer> = Arc::new(FrameRenderer::new(paths.clone(), &settings));
+    let provider = MockProvider::new();
+    let radar = NoRadar;
+    let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
+    let mut state = State::new();
+
+    let mut order = Vec::new();
+    for _ in 0..4 {
+        let services = Services {
+            paths: &paths,
+            settings: &settings,
+            renderer: &renderer,
+            forecast: &provider,
+            alerts: &provider,
+            radar: &radar,
+            metrics: &metrics,
+            now: now(),
+        };
+        let cycle = modes::run(Mode::Photo, &services, &mut state)
+            .await
+            .unwrap();
+        order.push(cycle.photo.unwrap());
+    }
+
+    assert_eq!(order, ["a.png", "b.png", "c.png", "a.png"]);
+    assert_eq!(state.photo_last.as_deref(), Some("a.png"));
+
+    let output = Image::from_png(&paths.output_img()).unwrap();
+    assert_eq!((output.width, output.height), (800, 480));
+    let mut colors = Vec::new();
+    for y in 0..output.height {
+        for x in 0..output.width {
+            let pixel = output.pixel(x, y);
+            assert!(
+                EINK_COLORS.contains(&[pixel[0], pixel[1], pixel[2]]),
+                "pixel {x},{y} is not a palette colour: {pixel:?}"
+            );
+            if !colors.contains(&[pixel[0], pixel[1], pixel[2]]) {
+                colors.push([pixel[0], pixel[1], pixel[2]]);
+            }
+        }
+    }
+    assert!(
+        colors.len() > 1,
+        "dithering a gradient must use more than one palette colour"
+    );
+}
+
+#[tokio::test]
+async fn photo_mode_skips_a_wrong_sized_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    std::fs::create_dir_all(paths.data_dir()).unwrap();
+    std::fs::create_dir_all(paths.photos_dir()).unwrap();
+    write_eink_png(&paths.palette_img()).unwrap();
+    Image::new(10, 10, [255, 255, 255, 255])
+        .write_png(&paths.photos_dir().join("a.png"))
+        .unwrap();
+    write_photo(&paths.photos_dir().join("b.png"), [10, 100, 200]);
+
+    let config = Config::parse(CONFIG).unwrap();
+    let settings = Settings::from_config(&config).unwrap();
+    let renderer: Arc<dyn Renderer> = Arc::new(FrameRenderer::new(paths.clone(), &settings));
+    let provider = MockProvider::new();
+    let radar = NoRadar;
+    let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
+    let mut state = State::new();
+    let services = Services {
+        paths: &paths,
+        settings: &settings,
+        renderer: &renderer,
+        forecast: &provider,
+        alerts: &provider,
+        radar: &radar,
+        metrics: &metrics,
+        now: now(),
+    };
+
+    let cycle = modes::run(Mode::Photo, &services, &mut state)
+        .await
+        .unwrap();
+    assert_eq!(cycle.photo.as_deref(), Some("b.png"));
+}
+
+#[tokio::test]
+async fn photo_mode_fails_without_a_photo_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    std::fs::create_dir_all(paths.data_dir()).unwrap();
+    write_eink_png(&paths.palette_img()).unwrap();
+
+    let config = Config::parse(CONFIG).unwrap();
+    let settings = Settings::from_config(&config).unwrap();
+    let renderer: Arc<dyn Renderer> = Arc::new(FrameRenderer::new(paths.clone(), &settings));
+    let provider = MockProvider::new();
+    let radar = NoRadar;
+    let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
+    let mut state = State::new();
+    let services = Services {
+        paths: &paths,
+        settings: &settings,
+        renderer: &renderer,
+        forecast: &provider,
+        alerts: &provider,
+        radar: &radar,
+        metrics: &metrics,
+        now: now(),
+    };
+
+    let error = modes::run(Mode::Photo, &services, &mut state)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("photos"), "{error}");
 }

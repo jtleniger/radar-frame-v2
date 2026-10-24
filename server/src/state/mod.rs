@@ -41,6 +41,9 @@ pub struct State {
     /// Candidate mode and how many consecutive status samples have named it.
     pub pending_mode: Option<Mode>,
     pub pending_samples: u32,
+    /// Last photo file name served in [`Mode::Photo`], so a restart resumes
+    /// the rotation instead of repeating the first image.
+    pub photo_last: Option<String>,
     /// Last frame that rendered and validated successfully. Kept across
     /// upstream failures so `/frame` can serve it instead of `503`.
     pub frame: Option<Arc<PublishedFrame>>,
@@ -75,6 +78,7 @@ impl State {
             mode_since: DateTime::UNIX_EPOCH,
             pending_mode: None,
             pending_samples: 0,
+            photo_last: None,
             frame: None,
             forecast: None,
             alerts: None,
@@ -262,6 +266,7 @@ impl State {
         state.failures = persisted.failures;
         state.radar_last_updated = persisted.radar_last_updated;
         state.radar_key = persisted.radar_key;
+        state.photo_last = persisted.photo_last;
         state.mode_since = persisted.last_updated;
 
         tracing::info!(
@@ -289,6 +294,7 @@ impl State {
             failures: self.failures,
             radar_last_updated: self.radar_last_updated,
             radar_key: self.radar_key.clone(),
+            photo_last: self.photo_last.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&persisted)?;
         fsutil::atomic_write(path, &bytes)?;
@@ -334,6 +340,8 @@ struct Persisted {
     radar_last_updated: DateTime<Utc>,
     #[serde(default)]
     radar_key: Option<String>,
+    #[serde(default)]
+    photo_last: Option<String>,
 }
 
 fn local_string(time: DateTime<Utc>, timezone: Tz) -> Option<String> {
@@ -377,6 +385,13 @@ mod tests {
     fn intervals_match_the_python_schedule() {
         assert_eq!(Mode::Storm.interval(), Duration::minutes(10));
         assert_eq!(Mode::Clear.interval(), Duration::minutes(30));
+        assert_eq!(Mode::Photo.interval(), Duration::minutes(10));
+    }
+
+    #[test]
+    fn photo_mode_round_trips_through_its_name() {
+        assert_eq!(Mode::Photo.name(), "Photo");
+        assert_eq!(Mode::parse("Photo"), Some(Mode::Photo));
     }
 
     fn status(up: bool, vcp: i32) -> RadarStatus {
@@ -502,6 +517,7 @@ mod tests {
         state.failures = 2;
         state.radar_last_updated = at("2026-10-21T15:20:00Z");
         state.radar_key = Some("2026/10/21/KTLX/KTLX20261021_152000_V06".into());
+        state.photo_last = Some("vacation-02.png".into());
         state.save(&path).unwrap();
 
         let loaded = State::load(&path);
@@ -514,6 +530,7 @@ mod tests {
         assert_eq!(loaded.failures, state.failures);
         assert_eq!(loaded.radar_last_updated, state.radar_last_updated);
         assert_eq!(loaded.radar_key, state.radar_key);
+        assert_eq!(loaded.photo_last, state.photo_last);
         assert_eq!(loaded.mode_since, state.last_updated);
     }
 

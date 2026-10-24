@@ -7,7 +7,7 @@ use crate::view::components::{
     current_conditions, daily_forecast, hourly_forecast, HEIGHT, HEIGHT_LESS_INFO, INFO_HEIGHT,
     WIDTH, WIDTH_1_3,
 };
-use crate::view::error::Result;
+use crate::view::error::{Error, Result};
 use crate::view::font::Fonts;
 use crate::view::forecast::Alert;
 use crate::view::image::Image;
@@ -67,5 +67,23 @@ pub fn render_clear(
     );
 
     palette.quantize(&mut image, false);
+    Ok(image)
+}
+
+/// A full-panel photo dithered onto the e-ink palette.
+///
+/// The input is expected to be cropped to the panel already; a differently
+/// sized image is rejected rather than scaled, so a bad drop cannot silently
+/// stretch. Dithering matches the storm frame.
+pub fn render_photo(photo: &Image, palette: &Palette) -> Result<Image> {
+    if (photo.width, photo.height) != (WIDTH, HEIGHT) {
+        return Err(Error::Image(format!(
+            "photo is {}x{}, expected {WIDTH}x{HEIGHT}",
+            photo.width, photo.height
+        )));
+    }
+
+    let mut image = photo.clone();
+    palette.quantize(&mut image, true);
     Ok(image)
 }

@@ -26,6 +26,8 @@ use radar_frame::sources::{
     RadarStatusSource, Sources,
 };
 use radar_frame::state::{Mode, ModeSelect};
+use radar_frame::view::image::Image;
+use radar_frame::view::palette::EINK_COLORS;
 
 const NOW: &str = "2026-10-21T15:30:00Z";
 
@@ -388,6 +390,10 @@ impl Renderer for ToggleRenderer {
         }
         self.renderer.render_clear(forecast, alerts, now)
     }
+
+    fn render_photo(&self, photo: &Path) -> radar_frame::error::Result<()> {
+        self.renderer.render_photo(photo)
+    }
 }
 
 struct TestRenderer {
@@ -427,6 +433,10 @@ impl Renderer for TestRenderer {
         now: DateTime<Utc>,
     ) -> radar_frame::error::Result<()> {
         self.renderer.render_clear(forecast, alerts, now)
+    }
+
+    fn render_photo(&self, photo: &Path) -> radar_frame::error::Result<()> {
+        self.renderer.render_photo(photo)
     }
 }
 
@@ -469,6 +479,10 @@ impl Renderer for StaticRenderer {
     ) -> radar_frame::error::Result<()> {
         std::fs::copy(&self.png, &self.output)?;
         Ok(())
+    }
+
+    fn render_photo(&self, _photo: &Path) -> radar_frame::error::Result<()> {
+        unreachable!("photo mode is not exercised here")
     }
 }
 
@@ -854,6 +868,55 @@ async fn settings_rejects_unknown_values() {
 
     let response = post_form(&router, "/settings", "mode-select=Manual&mode=Fog").await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn photo_mode_selection_serves_a_dithered_photo() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.paths.photos_dir()).unwrap();
+    let mut photo = Image::new(800, 480, [0, 0, 0, 255]);
+    for y in 0..480u32 {
+        for x in 0..800u32 {
+            let ramp = (x * 255 / 799) as u8;
+            photo.put_pixel(x as i64, y as i64, [ramp, 255 - ramp, 128, 255]);
+        }
+    }
+    photo
+        .write_png(&fixture.paths.photos_dir().join("one.png"))
+        .unwrap();
+
+    let (router, state) = app(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = post_form(&router, "/settings", "mode-select=Manual&mode=Photo").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(state.snapshot().state.mode, Mode::Photo);
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+    let body = body_bytes(response).await;
+
+    let frame = Image::from_png(&fixture.paths.output_img()).unwrap();
+    assert_eq!((frame.width, frame.height), (800, 480));
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            let pixel = frame.pixel(x, y);
+            assert!(
+                EINK_COLORS.contains(&[pixel[0], pixel[1], pixel[2]]),
+                "pixel {x},{y} is not a palette colour: {pixel:?}"
+            );
+        }
+    }
+
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.state.photo_last.as_deref(), Some("one.png"));
+    let published = snapshot.state.frame.as_ref().unwrap();
+    assert_eq!(body.len(), published.bytes.len());
 }
 
 #[tokio::test]

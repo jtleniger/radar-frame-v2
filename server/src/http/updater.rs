@@ -205,6 +205,7 @@ impl Updater {
             radials = cycle.radials,
             gates = cycle.gates,
             alerts = cycle.alerts,
+            photo = cycle.photo.as_deref().unwrap_or("-"),
             render_ms = cycle.render_ms,
             frame_bytes = frame.bytes.len(),
             frame_sha = frame.etag.trim_matches('"'),

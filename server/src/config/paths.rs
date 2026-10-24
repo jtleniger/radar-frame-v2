@@ -29,6 +29,12 @@ impl Paths {
         self.root.join("data")
     }
 
+    /// Photos for [`crate::state::Mode::Photo`]. Fixed at the working
+    /// directory root, alongside `data/`, and never created by the service.
+    pub fn photos_dir(&self) -> PathBuf {
+        self.root.join("photos")
+    }
+
     pub fn streets_osm(&self) -> PathBuf {
         self.data_dir().join("streets.osm")
     }
@@ -98,6 +104,7 @@ mod tests {
     fn artifacts_live_under_the_data_directory() {
         let paths = Paths::new("/srv/radar");
         assert_eq!(paths.data_dir(), PathBuf::from("/srv/radar/data"));
+        assert_eq!(paths.photos_dir(), PathBuf::from("/srv/radar/photos"));
         assert_eq!(
             paths.streets_img(),
             PathBuf::from("/srv/radar/data/streets.png")

@@ -17,6 +17,9 @@ pub const MODE_MIN_DWELL: Duration = Duration::minutes(5);
 pub enum Mode {
     Storm,
     Clear,
+    /// Photographs from the `photos/` directory. Never selected from the radar
+    /// status; only an explicit manual selection can enter it.
+    Photo,
 }
 
 impl Mode {
@@ -24,6 +27,7 @@ impl Mode {
         match self {
             Mode::Storm => "Storm",
             Mode::Clear => "Clear",
+            Mode::Photo => "Photo",
         }
     }
 
@@ -31,15 +35,17 @@ impl Mode {
         match value {
             "Storm" => Some(Mode::Storm),
             "Clear" => Some(Mode::Clear),
+            "Photo" => Some(Mode::Photo),
             _ => None,
         }
     }
 
-    /// Storm every 10 minutes, clear every 30.
+    /// Storm every 10 minutes, clear every 30, photos every 10.
     pub fn interval(self) -> Duration {
         match self {
             Mode::Storm => Duration::minutes(10),
             Mode::Clear => Duration::minutes(30),
+            Mode::Photo => Duration::minutes(10),
         }
     }
 }

@@ -36,6 +36,8 @@ pub trait Renderer: Send + Sync {
     fn render_storm(&self, alerts: &[Alert], now: DateTime<Utc>) -> Result<()>;
     fn render_clear(&self, forecast: &Forecast, alerts: &[Alert], now: DateTime<Utc>)
         -> Result<()>;
+    /// Dither one 800x480 photo and publish it as the frame.
+    fn render_photo(&self, photo: &Path) -> Result<()>;
 }
 
 /// Composes the radar, street, forecast, and alert layers into published
@@ -109,6 +111,14 @@ impl Renderer for FrameRenderer {
         let image =
             views::render_clear(&self.fonts, forecast, alerts, now, self.timezone, &palette)?;
         image.write_png(&self.paths.output_img())?;
+        Ok(())
+    }
+
+    /// One photo, full panel, dithered onto the palette.
+    fn render_photo(&self, photo: &Path) -> Result<()> {
+        let photo = Image::from_png(photo)?;
+        let palette = Palette::from_png(&self.paths.palette_img())?;
+        views::render_photo(&photo, &palette)?.write_png(&self.paths.output_img())?;
         Ok(())
     }
 }
