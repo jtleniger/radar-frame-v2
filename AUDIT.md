@@ -94,8 +94,8 @@ ID form: `<category>.<finding>.<action>`.
 
 | Done | ID | Action |
 |:---:|---|---|
-| [ ] | 1.1.1 | Render base frame first; publish degraded frame on alert failure |
-| [ ] | 1.1.2 | Serve last good frame on upstream errors; `503` only if none; keep last mode |
+| [x] | 1.1.1 | Render base frame first; publish degraded frame on alert failure |
+| [x] | 1.1.2 | Serve last good frame on upstream errors; `503` only if none; keep last mode |
 | [ ] | 1.2.1 | Stream S3 GET to `.part` with a byte cap |
 | [ ] | 1.2.2 | Cap decompression; reject oversized LDM records; checked arithmetic |
 | [ ] | 1.3.1 | Temp file + `rename` for all artifacts |
@@ -104,7 +104,7 @@ ID form: `<category>.<finding>.<action>`.
 | [ ] | 1.4.2 | Validate OSM/mask before writing OSM file and stamps |
 | [ ] | 1.5.1 | Skip malformed alerts with a warning |
 | [ ] | 1.5.2 | Map missing `rda` to down/Clear |
-| [ ] | 1.6.1 | Distinguish `404`/`500` in `png_file` |
+| [x] | 1.6.1 | Distinguish `404`/`500` in `png_file` |
 | [ ] | 1.6.2 | Handle logging init/rotation failures |
 | [ ] | 1.6.3 | Add client request timeout |
 | [ ] | 2.1.1 | Add `/healthz`, `/readyz`, `/status` |
@@ -131,7 +131,7 @@ ID form: `<category>.<finding>.<action>`.
 | [x] | 5.3.1 | Remove forecast/`ClearInput` clones |
 | [x] | 5.4.1 | Cap bodies, gzip, `Accept`, upstream logging |
 | [rejected] | ~~6.1.1~~ | ~~Cache palette and icons~~ |
-| [ ] | 6.2.1 | Publish in-memory frame bytes + ETag |
+| [x] | 6.2.1 | Publish in-memory frame bytes + ETag |
 | [ ] | 6.3.1 | Collapse `Renderer`/single `Settings` |
 | [ ] | 7.1.1 | Background updater + immutable snapshot |
 | [ ] | 7.1.2 | Interim no-lock-across-await / single-flight |

@@ -2,12 +2,12 @@
 //! service at `capture.py`'s fixed clock.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::Router;
 use chrono::{DateTime, Utc};
 use http_body_util::BodyExt;
@@ -114,6 +114,48 @@ impl ForecastProvider for TestProvider {
     }
 }
 
+/// Provider whose upstream calls can be failed independently, for the
+/// last-good and degraded-frame paths.
+struct FlakyProvider {
+    fail_forecast: AtomicBool,
+    fail_alerts: AtomicBool,
+    fail_status: AtomicBool,
+}
+
+impl FlakyProvider {
+    fn new() -> Self {
+        FlakyProvider {
+            fail_forecast: AtomicBool::new(false),
+            fail_alerts: AtomicBool::new(false),
+            fail_status: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl ForecastProvider for FlakyProvider {
+    async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
+        if self.fail_forecast.load(Ordering::SeqCst) {
+            return Err(radar_frame::error::Error::new("forecast unavailable"));
+        }
+        Ok(MockProvider::new().forecast_data().clone())
+    }
+
+    async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
+        if self.fail_alerts.load(Ordering::SeqCst) {
+            return Err(radar_frame::error::Error::new("alerts unavailable"));
+        }
+        Ok(Vec::new())
+    }
+
+    async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
+        if self.fail_status.load(Ordering::SeqCst) {
+            return Err(radar_frame::error::Error::new("status unavailable"));
+        }
+        Ok(RadarStatus { up: true, vcp: 31 })
+    }
+}
+
 struct TestRenderer {
     engine: Engine,
     radar_png: PathBuf,
@@ -197,6 +239,22 @@ async fn get(router: &Router, uri: &str) -> axum::response::Response {
     router
         .clone()
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn get_with_headers(
+    router: &Router,
+    uri: &str,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let mut builder = Request::builder().uri(uri);
+    for (name, value) in &headers {
+        builder = builder.header(name, value);
+    }
+    router
+        .clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
         .await
         .unwrap()
 }
@@ -474,4 +532,180 @@ async fn stylesheet_is_served() {
         body_bytes(response).await,
         include_bytes!("../static/style.css").to_vec()
     );
+}
+
+#[tokio::test]
+async fn radar_status_failure_keeps_the_last_mode() {
+    let fixture = Fixture::new();
+    let provider = Arc::new(FlakyProvider::new());
+    provider.fail_status.store(true, Ordering::SeqCst);
+
+    let (router, state) = app(
+        &fixture,
+        provider,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    {
+        let mut state = state.state.lock().await;
+        state.mode = Mode::Storm;
+        state.last_updated = now();
+    }
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+
+    let state = state.state.lock().await;
+    assert_eq!(state.mode, Mode::Storm);
+}
+
+#[tokio::test]
+async fn alert_failure_publishes_a_degraded_frame() {
+    let fixture = Fixture::new();
+    let provider = Arc::new(FlakyProvider::new());
+    provider.fail_alerts.store(true, Ordering::SeqCst);
+
+    let (router, state) = app(
+        &fixture,
+        provider,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_matches_png(&body_bytes(response).await, &golden("clear-frame.png"));
+
+    let state = state.state.lock().await;
+    let frame = state.frame.as_ref().expect("degraded frame is published");
+    assert!(frame
+        .degraded
+        .as_deref()
+        .is_some_and(|reason| reason.contains("alerts")));
+}
+
+#[tokio::test]
+async fn failed_cycle_serves_the_last_good_frame() {
+    let fixture = Fixture::new();
+    let provider = Arc::new(FlakyProvider::new());
+
+    let (router, state) = app(
+        &fixture,
+        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response.headers()[header::ETAG].clone();
+    let first = body_bytes(response).await;
+
+    // Fail the next cycle and make it due immediately.
+    provider.fail_forecast.store(true, Ordering::SeqCst);
+    state.state.lock().await.last_updated = DateTime::UNIX_EPOCH;
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::ETAG], etag);
+    assert_eq!(body_bytes(response).await, first);
+
+    let state = state.state.lock().await;
+    assert_eq!(state.last_updated, DateTime::UNIX_EPOCH);
+}
+
+#[tokio::test]
+async fn first_cycle_failure_returns_503() {
+    let fixture = Fixture::new();
+    let provider = Arc::new(FlakyProvider::new());
+    provider.fail_forecast.store(true, Ordering::SeqCst);
+
+    let (router, state) = app(
+        &fixture,
+        provider,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "60");
+    assert!(state.state.lock().await.frame.is_none());
+}
+
+#[tokio::test]
+async fn matching_if_none_match_returns_304() {
+    let fixture = Fixture::new();
+    let (router, state) = app(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response.headers()[header::ETAG].clone();
+
+    state.state.lock().await.last_updated = DateTime::UNIX_EPOCH;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::IF_NONE_MATCH, etag);
+    let response = get_with_headers(&router, "/frame", headers).await;
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert!(body_bytes(response).await.is_empty());
+
+    state.state.lock().await.last_updated = DateTime::UNIX_EPOCH;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::IF_NONE_MATCH, "\"not-the-tag\"".parse().unwrap());
+    let response = get_with_headers(&router, "/frame", headers).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn debug_frame_uses_published_bytes() {
+    let fixture = Fixture::new();
+    let (router, _) = app(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let published = body_bytes(response).await;
+
+    // A writer replacing the debug artifact must not change what is served.
+    std::fs::write(fixture.paths.output_img(), b"torn write").unwrap();
+
+    let response = get(&router, "/frame?debug=true").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await, published);
+}
+
+#[tokio::test]
+async fn debug_frame_maps_read_errors() {
+    let fixture = Fixture::new();
+    let (router, _) = app(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/frame?debug=true").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Anything other than a missing artifact is a server error, not a 404.
+    std::fs::create_dir(fixture.paths.output_img()).unwrap();
+    let (router, _) = app(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+    let response = get(&router, "/frame?debug=true").await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

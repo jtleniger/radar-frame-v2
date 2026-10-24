@@ -333,7 +333,9 @@ async fn render_storm(args: MockArgs) -> Result<()> {
         radar: radar.as_ref(),
         now: SystemClock.now(),
     };
-    modes::run(crate::state::Mode::Storm, &deps, &mut state).await
+    modes::run(crate::state::Mode::Storm, &deps, &mut state)
+        .await
+        .map(|_| ())
 }
 
 fn render_archive(args: ArchiveArgs) -> Result<()> {

@@ -12,6 +12,7 @@ pub mod config;
 pub mod constants;
 pub mod engine;
 pub mod error;
+pub mod frame;
 pub mod logging;
 pub mod modes;
 pub mod nexrad;

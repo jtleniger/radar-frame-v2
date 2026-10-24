@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::{Form, Query, State as AxumState};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -20,6 +20,7 @@ use crate::clock::Clock;
 use crate::config::Config;
 use crate::engine::Renderer;
 use crate::error::{Error, Result};
+use crate::frame::PublishedFrame;
 use crate::modes::{self, Deps};
 use crate::paths::Paths;
 use crate::sources::{ForecastProvider, RadarSource};
@@ -46,6 +47,12 @@ impl AppState {
         engine: Arc<dyn Renderer>,
     ) -> Result<Self> {
         let timezone = config.timezone("forecast", "timezone")?;
+
+        // A frame left by the previous process is still the last good one;
+        // publish it so the first poll survives an upstream outage.
+        let mut state = State::new();
+        state.frame = PublishedFrame::load(&paths.output_img()).map(Arc::new);
+
         Ok(AppState {
             config,
             paths,
@@ -54,7 +61,7 @@ impl AppState {
             provider,
             radar,
             engine,
-            state: Mutex::new(State::new()),
+            state: Mutex::new(state),
         })
     }
 
@@ -218,9 +225,16 @@ struct FrameQuery {
 async fn frame(
     AxumState(app): AxumState<Arc<AppState>>,
     Query(query): Query<FrameQuery>,
+    headers: HeaderMap,
 ) -> Response {
     if query.debug.as_deref() == Some("true") {
         tracing::info!("debug param set, sending current output");
+        // Prefer the published bytes so debug reads cannot observe a writer
+        // midway through `frame.png`.
+        let published = app.state.lock().await.frame.clone();
+        if let Some(frame) = published {
+            return frame.response(&headers);
+        }
         return png_file(&app.paths.output_img()).await;
     }
 
@@ -243,8 +257,9 @@ async fn frame(
                 }
             }
             Err(error) => {
+                // A status outage must not block rendering or change the
+                // last known mode; the cycle below still runs on schedule.
                 tracing::error!("radar status: {error}");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         }
     } else {
@@ -261,15 +276,71 @@ async fn frame(
             now,
         };
 
-        if let Err(error) = modes::run(state.mode, &deps, &mut state).await {
-            tracing::error!("{} mode failed: {error}", state.mode.name());
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+        let mode = state.mode;
+        let cycle = match modes::run(mode, &deps, &mut state).await {
+            Ok(cycle) => cycle,
+            Err(error) => {
+                tracing::error!("{} mode failed: {error}", mode.name());
+                return last_good(&state, &headers);
+            }
+        };
 
+        let frame = match std::fs::read(app.paths.output_img()) {
+            Ok(bytes) => match PublishedFrame::new(bytes, now, Some(mode), cycle.degraded) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    tracing::error!("{}: {error}", app.paths.output_img().display());
+                    return last_good(&state, &headers);
+                }
+            },
+            Err(error) => {
+                tracing::error!("{}: {error}", app.paths.output_img().display());
+                return last_good(&state, &headers);
+            }
+        };
+
+        let frame = Arc::new(frame);
         state.last_updated = now;
-        png_file(&app.paths.output_img()).await
+        state.frame = Some(Arc::clone(&frame));
+        drop(state);
+
+        tracing::info!(
+            "published frame: mode={} bytes={} degraded={:?}",
+            mode.name(),
+            frame.bytes.len(),
+            frame.degraded
+        );
+        frame.response(&headers)
     } else {
-        StatusCode::NOT_MODIFIED.into_response()
+        // The polling contract: no new frame is due, so tell the client to
+        // keep what it has. Include the tag for clients that track it.
+        let etag = state.frame.as_ref().map(|frame| frame.etag.clone());
+        drop(state);
+
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        if let Some(etag) = etag {
+            if let Ok(value) = HeaderValue::from_str(&etag) {
+                response.headers_mut().insert(header::ETAG, value);
+            }
+        }
+        response
+    }
+}
+
+/// Serve the last good frame after a failed cycle, or 503 before the first
+/// frame has ever been published.
+fn last_good(state: &State, headers: &HeaderMap) -> Response {
+    match state.frame.clone() {
+        Some(frame) => {
+            tracing::warn!("serving last good frame after failed cycle");
+            frame.response(headers)
+        }
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "60")],
+            "no frame available yet",
+        )
+            .into_response(),
     }
 }
 
@@ -278,7 +349,11 @@ async fn png_file(path: &std::path::Path) -> Response {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
         Err(error) => {
             tracing::error!("{}: {error}", path.display());
-            StatusCode::NOT_FOUND.into_response()
+            if error.kind() == std::io::ErrorKind::NotFound {
+                StatusCode::NOT_FOUND.into_response()
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
     }
 }
