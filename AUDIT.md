@@ -127,7 +127,7 @@ ID form: `<category>.<finding>.<action>`.
 | [x] | 4.3.4 | Borrow moment slices |
 | [x] | 5.1.1 | Remove process-lifetime forecast cache |
 | [x] | 5.1.2 | Two-cycle forecast refresh test |
-| [ ] | 5.2.1 | Split provider traits/snapshot |
+| [x] | 5.2.1 | Split provider traits/snapshot |
 | [x] | 5.3.1 | Remove forecast/`ClearInput` clones |
 | [x] | 5.4.1 | Cap bodies, gzip, `Accept`, upstream logging |
 | [rejected] | ~~6.1.1~~ | ~~Cache palette and icons~~ |

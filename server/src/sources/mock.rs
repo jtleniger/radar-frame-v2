@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use super::{Forecast, ForecastProvider, RadarStatus};
+use super::{AlertSource, Forecast, ForecastSource, RadarStatus, RadarStatusSource};
 use crate::error::Result;
 use crate::view::forecast::{Alert, CurrentConditions, ForecastDay, ForecastHour};
 
@@ -141,15 +141,21 @@ impl Default for MockProvider {
 }
 
 #[async_trait]
-impl ForecastProvider for MockProvider {
+impl ForecastSource for MockProvider {
     async fn forecast(&self) -> Result<Forecast> {
         Ok(self.forecast.clone())
     }
+}
 
+#[async_trait]
+impl AlertSource for MockProvider {
     async fn alerts(&self) -> Result<Vec<Alert>> {
         Ok(Vec::new())
     }
+}
 
+#[async_trait]
+impl RadarStatusSource for MockProvider {
     async fn radar_status(&self) -> Result<RadarStatus> {
         Ok(RadarStatus { up: true, vcp: 31 })
     }

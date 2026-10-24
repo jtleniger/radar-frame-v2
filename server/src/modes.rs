@@ -13,7 +13,7 @@ use crate::engine::Renderer;
 use crate::error::{Error, Result};
 use crate::metrics::{elapsed_ms, Metrics};
 use crate::paths::Paths;
-use crate::sources::{Forecast, ForecastProvider, RadarSource};
+use crate::sources::{AlertSource, Forecast, ForecastSource, RadarSource};
 use crate::state::{Mode, State};
 use crate::view::forecast::Alert;
 
@@ -25,7 +25,8 @@ pub struct Deps<'a> {
     pub paths: &'a Paths,
     pub config: &'a Config,
     pub engine: &'a Arc<dyn Renderer>,
-    pub provider: &'a dyn ForecastProvider,
+    pub forecast: &'a dyn ForecastSource,
+    pub alerts: &'a dyn AlertSource,
     pub radar: &'a dyn RadarSource,
     pub metrics: &'a Metrics,
     pub now: DateTime<Utc>,
@@ -196,7 +197,7 @@ async fn clear(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
 /// call fails. The cycle fails only before a forecast has ever been cached.
 async fn forecast(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Result<Arc<Forecast>> {
     let started = Instant::now();
-    let forecast = deps.provider.forecast().await;
+    let forecast = deps.forecast.forecast().await;
     deps.metrics
         .upstream(deps.now, started.elapsed(), forecast.is_ok());
 
@@ -222,7 +223,7 @@ async fn forecast(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Resu
 /// A missing alert layer never fails the frame.
 async fn alerts(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Arc<[Alert]> {
     let started = Instant::now();
-    let alerts = deps.provider.alerts().await;
+    let alerts = deps.alerts.alerts().await;
     deps.metrics
         .upstream(deps.now, started.elapsed(), alerts.is_ok());
 

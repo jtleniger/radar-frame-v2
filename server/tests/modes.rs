@@ -11,7 +11,9 @@ use radar_frame::engine::{Engine, Renderer};
 use radar_frame::modes::{self, Deps};
 use radar_frame::paths::Paths;
 use radar_frame::sources::mock::MockProvider;
-use radar_frame::sources::{Forecast, ForecastProvider, Object, RadarSource, RadarStatus};
+use radar_frame::sources::{
+    AlertSource, Forecast, ForecastSource, Object, RadarSource, RadarStatus, RadarStatusSource,
+};
 use radar_frame::state::{Mode, State};
 use radar_frame::view::forecast::Alert;
 use radar_frame::view::palette::write_eink_png;
@@ -54,7 +56,7 @@ impl CountingProvider {
 }
 
 #[async_trait]
-impl ForecastProvider for CountingProvider {
+impl ForecastSource for CountingProvider {
     async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         let mut forecast = MockProvider::new().forecast_data().clone();
@@ -63,11 +65,17 @@ impl ForecastProvider for CountingProvider {
         forecast.current.temp_f = 60.0 + call as f64;
         Ok(forecast)
     }
+}
 
+#[async_trait]
+impl AlertSource for CountingProvider {
     async fn alerts(&self) -> radar_frame::error::Result<Vec<Alert>> {
         Ok(Vec::new())
     }
+}
 
+#[async_trait]
+impl RadarStatusSource for CountingProvider {
     async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
         Ok(RadarStatus { up: true, vcp: 31 })
     }
@@ -175,7 +183,8 @@ async fn rejected_volume_keeps_the_last_good_pair() {
         paths: &paths,
         config: &config,
         engine: &engine,
-        provider: &provider,
+        forecast: &provider,
+        alerts: &provider,
         radar: &radar,
         metrics: &metrics,
         now: now(),
@@ -209,7 +218,8 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
             paths: &paths,
             config: &config,
             engine: &engine,
-            provider: &provider,
+            forecast: &provider,
+            alerts: &provider,
             radar: &radar,
             metrics: &metrics,
             now: now(),
@@ -328,7 +338,8 @@ async fn storm_with_failing_radar(radar: &dyn RadarSource) -> modes::Cycle {
         paths: &paths,
         config: &config,
         engine: &engine,
-        provider: &provider,
+        forecast: &provider,
+        alerts: &provider,
         radar,
         metrics: &metrics,
         now: now(),
