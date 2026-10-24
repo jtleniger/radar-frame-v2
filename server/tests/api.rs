@@ -759,7 +759,7 @@ async fn clear_frame_matches_flask_and_returns_304_until_due() {
 }
 
 #[tokio::test]
-async fn storm_frame_matches_flask() {
+async fn storm_frame_matches_the_golden() {
     let fixture = Fixture::new();
     let alerts = nws::parse_alerts(
         &std::fs::read_to_string(manifest("tests/fixtures/api/nws-alerts.json")).unwrap(),

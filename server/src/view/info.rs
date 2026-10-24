@@ -34,7 +34,9 @@ pub fn render(fonts: &Fonts, alerts: &[Alert], now_utc: DateTime<Utc>, timezone:
     );
 
     let mut active: Vec<&Alert> = alerts.iter().filter(|a| a.is_active(now_utc)).collect();
-    active.sort_by_key(|a| a.level);
+    // Most severe first; the highest `AlertLevel` wins the bar. The sort is
+    // stable, so equal levels keep their input order.
+    active.sort_by_key(|a| std::cmp::Reverse(a.level));
 
     let Some(first) = active.first() else {
         return image;
@@ -66,7 +68,6 @@ mod tests {
     use chrono_tz::America::Chicago;
 
     use super::*;
-    use crate::view::colors::YELLOW;
 
     fn alert(event: &str, level: AlertLevel, now: DateTime<Utc>) -> Alert {
         Alert {
@@ -79,18 +80,20 @@ mod tests {
     }
 
     #[test]
-    fn chooses_the_first_alert_in_severity_order() {
+    fn chooses_the_most_severe_active_alert() {
         let now = Utc.with_ymd_and_hms(2025, 6, 1, 12, 34, 56).unwrap();
         let alerts = [
-            alert("tornado warning", AlertLevel::Warning, now),
             alert("flash flood watch", AlertLevel::Watch, now),
+            alert("tornado emergency", AlertLevel::Emergency, now),
+            alert("flood advisory", AlertLevel::Info, now),
+            alert("tornado warning", AlertLevel::Warning, now),
         ];
 
         let image = render(&Fonts::new(), &alerts, now, Chicago);
 
-        // Existing behaviour sorts ascending and shows the least severe
-        // active alert, so the Watch colours win here.
-        assert_eq!(image.pixel(0, 0), YELLOW);
+        // Emergency is the highest level, so its red bar wins regardless of
+        // the order the alerts arrive in.
+        assert_eq!(image.pixel(0, 0), RED);
     }
 
     #[test]

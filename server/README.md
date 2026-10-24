@@ -369,7 +369,8 @@ partial volume (for example, one without elevation 1) still renders. Without
 `view storm` reads alerts as JSON on stdin: an array of
 `{event, level, status, effective, expires}` where `level` is
 `Info|Watch|Warning|Emergency`. Only `actual` alerts whose interval contains
-now are drawn; they are sorted by ascending severity and the first is shown.
+now are drawn; they are sorted by descending severity and the most severe is
+shown (with a count of the others).
 
 ```sh
 radar-frame view storm \
@@ -425,13 +426,15 @@ cargo test --all-targets
   recipe used the removed `nexrad-geojson` converter and belongs to the
   pre-cutover commit, so it is not runnable from this tree.
 - `fixtures/view`: the Python views at commit `202792a`, Pillow 11.1.0,
-  CairoSVG 2.9.1. The info bar is identical; the clear frame is 99.31%
-  identical (icon edges); the storm dither differs but 8x8 block means stay
-  within 3.4/255.
+  CairoSVG 2.9.1. The info bars were regenerated with the most-severe alert
+  precedence fix (the Python views sorted ascending, so they always showed the
+  least severe alert); the rest of the clear frame is 99.31% identical (icon
+  edges) and the storm dither differs but 8x8 block means stay within 3.4/255.
 - `fixtures/api`: Flask goldens at commit `aca9092` with a fixed clock
   `2026-10-21T15:30:00Z` and `America/Chicago`. Regeneration needs a worktree of
   that commit; the storm case stubs the download and uses
-  `fixtures/frame/ktlx-mini/frame.expected.png`.
+  `fixtures/frame/ktlx-mini/frame.expected.png`. Its info bar carries the same
+  most-severe-alert correction, so it was regenerated from the fixed renderer.
 
 The integration tests drive the real binary (render/view) and the axum router
 (api). The frame and mask goldens must report 0 differing pixels; the view
