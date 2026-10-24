@@ -107,7 +107,7 @@ the fused `render archive` (Archive II -> REF frame). `VEL`, `SW`, `ZDR`,
 | Path | Purpose |
 |---|---|
 | `GET /` | Home page: latest frame, readiness, schedule/radar/service status from the same snapshot as `/status`, and the mode form. |
-| `GET /frame` | Current e-ink frame; `304` until the next cycle is due. A failed cycle keeps serving the last good frame and backs off. |
+| `GET /frame` | Current e-ink frame; `304` until the next cycle is due when the caller's `If-None-Match` matches the published frame. A stale validator gets the published frame immediately so a client that missed a tick can catch up. A failed cycle keeps serving the last good frame and backs off. |
 | `GET /frame?debug=true` | Last published frame, bypassing the schedule. |
 | `POST /settings` | Mode-selection form target. |
 | `GET /healthz` | Liveness; always `200` while the process is running. |
@@ -127,7 +127,8 @@ or rendering.
 
 - A `GET /frame` poll wakes the updater and waits for the result only when work
   is due; concurrent polls queue behind that one updater, so a burst runs one
-  cycle and the rest return `304`.
+  cycle and the rest answer with the published frame (or `304` when their
+  validator already matches it).
 - A 60-second tick lets the schedule, radar-status TTL, and retry backoff
   advance even while no client is polling.
 - `/`, `/readyz`, and `/status` answer from the snapshot alone. `/settings` is
@@ -297,6 +298,10 @@ contract:
 - `GET /frame?debug=true` returns `data/frame.png`;
 - `GET /frame` returns 304 until the mode's interval elapses (10 minutes in
   Storm and Photo, 30 in Clear), then renders and returns the image;
+- `GET /frame` with an `If-None-Match` that differs from the published frame
+  returns that frame immediately, even between cycles, so a client that missed
+  a published update (for example because the ticker ran the cycle just before
+  its poll) catches up instead of waiting for the next interval;
 - manual selection expires one day after it is chosen;
 - auto selection re-reads the NWS radar station on each `/frame` request and
   switches to Clear when the radar is down, the VCP is unknown, or the VCP is
