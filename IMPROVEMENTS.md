@@ -2,4 +2,3 @@
 [x] Show the data provided by the `/status` endpoint on home page in a clean, easy to digest format and clean up the home page UI and keep the same mobile friendly, simple theme, but make it a bit better looking
 [x] Simplify the CLI, and implement mock alerts if they're not already there (setup, serve, check clear/radar/warnings with/without mocks)
 [] Refactor poorly named variables: they should be concise (no more than 3 words) but descriptive. Some examples that caught my eye: deps, engine, object: what do those do?
-[] Update client to incorporate server changes (unmodified, 500, 503, status, healthz, readyz, etc.)
