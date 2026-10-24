@@ -115,10 +115,18 @@ pub async fn frame(
                     Error::unavailable(60, "last cycle failed; retrying after backoff"),
                 )
             } else {
-                // The polling contract: no new frame is due, so tell the
-                // client to keep what it has. Include the tag for clients that
-                // track it.
-                not_modified(&snapshot.state)
+                // The polling contract: no new frame is due. A caller that
+                // already holds the published frame gets a bare 304. A caller
+                // whose `If-None-Match` is stale missed a frame published by
+                // the ticker or another poll; serve it now rather than making
+                // that client wait for the next interval (which in Photo mode
+                // means skipping a whole photo).
+                match snapshot.state.frame.as_ref() {
+                    Some(frame) if headers.contains_key(header::IF_NONE_MATCH) => {
+                        frame.response(&headers)
+                    }
+                    _ => not_modified(&snapshot.state),
+                }
             }
         }
     }

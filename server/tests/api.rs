@@ -1189,6 +1189,65 @@ async fn matching_if_none_match_returns_304() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// A client that missed a frame published by the 60-second ticker (or by
+/// another client) still holds the previous ETag. Even though no cycle is due
+/// for its own poll, it must receive the published frame instead of a 304, or
+/// it will stay one frame behind until an unrelated later cycle.
+#[tokio::test]
+async fn stale_if_none_match_gets_the_published_frame_between_cycles() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.paths.photos_dir()).unwrap();
+    Image::new(800, 480, [0, 0, 0, 255])
+        .write_png(&fixture.paths.photos_dir().join("one.png"))
+        .unwrap();
+    Image::new(800, 480, [255, 255, 255, 255])
+        .write_png(&fixture.paths.photos_dir().join("two.png"))
+        .unwrap();
+
+    let clock = Arc::new(TestClock::new(now()));
+    let (router, _) = app_with_clock(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+        clock.clone(),
+    );
+
+    let response = post_form(&router, "/settings", "mode-select=Manual&mode=Photo").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The client gets the first photo and remembers its tag.
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let stale_etag = response.headers()[header::ETAG].clone();
+    let stale_bytes = body_bytes(response).await;
+    assert!(!stale_bytes.is_empty());
+
+    // The interval elapses and another poll (or the ticker) publishes the
+    // next photo. This client is not that poll.
+    clock.advance(Mode::Photo.interval());
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let fresh_etag = response.headers()[header::ETAG].clone();
+    let fresh_bytes = body_bytes(response).await;
+    assert_ne!(fresh_etag, stale_etag);
+    assert_ne!(fresh_bytes, stale_bytes);
+
+    // No cycle is due now, but this client's validator is stale.
+    let mut headers = HeaderMap::new();
+    headers.insert(header::IF_NONE_MATCH, stale_etag.clone());
+    let response = get_with_headers(&router, "/frame", headers).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::ETAG], fresh_etag);
+    assert_eq!(body_bytes(response).await, fresh_bytes);
+
+    // A client that is up to date still gets the cheap 304.
+    let mut headers = HeaderMap::new();
+    headers.insert(header::IF_NONE_MATCH, fresh_etag);
+    let response = get_with_headers(&router, "/frame", headers).await;
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+}
+
 #[tokio::test]
 async fn debug_frame_uses_published_bytes() {
     let fixture = Fixture::new();
