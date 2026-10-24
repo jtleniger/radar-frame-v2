@@ -41,30 +41,35 @@ pub async fn alerts(client: &reqwest::Client, config: &Config) -> Result<Vec<Ale
         config.get("nws", "zone")?,
         config.get("nws", "fire_zone")?
     );
-    let url = format!("{BASE_URL}alerts/active");
+    let url = reqwest::Url::parse_with_params(
+        &format!("{BASE_URL}alerts/active"),
+        &[("zone", zones.as_str())],
+    )
+    .map_err(|e| Error(format!("nws alerts url: {e}")))?;
 
-    let response = client.get(url).query(&[("zone", zones)]).send().await?;
-    let body = checked_text(response).await?;
+    let body = super::http::get(
+        client,
+        url,
+        "application/geo+json, application/json",
+        "nws-alerts",
+    )
+    .await?;
     parse_alerts(&body)
 }
 
 pub async fn radar_status(client: &reqwest::Client, config: &Config) -> Result<RadarStatus> {
     let nexrad_id = config.get("radar", "nexrad_id")?;
-    let url = format!("{BASE_URL}radar/stations/{nexrad_id}");
+    let url = reqwest::Url::parse(&format!("{BASE_URL}radar/stations/{nexrad_id}"))
+        .map_err(|e| Error(format!("nws radar url: {e}")))?;
 
-    let response = client.get(url).send().await?;
-    let body = checked_text(response).await?;
+    let body = super::http::get(
+        client,
+        url,
+        "application/geo+json, application/json",
+        "nws-radar-status",
+    )
+    .await?;
     parse_radar_status(&body)
-}
-
-async fn checked_text(response: reqwest::Response) -> Result<String> {
-    let status = response.status();
-    let url = response.url().clone();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(Error(format!("{url}: {status}: {body}")));
-    }
-    Ok(response.text().await?)
 }
 
 pub fn parse_alerts(body: &str) -> Result<Vec<Alert>> {

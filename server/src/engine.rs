@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::paths::Paths;
 use crate::sources::Forecast;
 use crate::view::font::Fonts;
-use crate::view::forecast::{Alert, ClearInput, CurrentConditions, ForecastDay, ForecastHour};
+use crate::view::forecast::Alert;
 use crate::view::image::Image;
 use crate::view::palette::Palette;
 use crate::view::views;
@@ -29,12 +29,8 @@ pub struct Bounds {
 pub trait Renderer: Send + Sync {
     fn render_radar(&self, volume: &Path, minimum: f64) -> Result<()>;
     fn render_storm(&self, alerts: &[Alert], now: DateTime<Utc>) -> Result<()>;
-    fn render_clear(
-        &self,
-        forecast: &Forecast,
-        alerts: Vec<Alert>,
-        now: DateTime<Utc>,
-    ) -> Result<()>;
+    fn render_clear(&self, forecast: &Forecast, alerts: &[Alert], now: DateTime<Utc>)
+        -> Result<()>;
 }
 
 pub struct Engine {
@@ -99,41 +95,12 @@ impl Engine {
     pub fn render_clear(
         &self,
         forecast: &Forecast,
-        alerts: Vec<Alert>,
+        alerts: &[Alert],
         now: DateTime<Utc>,
     ) -> Result<()> {
         let palette = Palette::from_png(&self.paths.palette_img())?;
-
-        // The panels copy the scalar fields; the view owns its input.
-        let input = ClearInput {
-            current: CurrentConditions {
-                temp_f: forecast.current.temp_f,
-                code: forecast.current.code,
-                is_day: forecast.current.is_day,
-            },
-            hourly: forecast
-                .hourly
-                .iter()
-                .map(|hour| ForecastHour {
-                    hour: hour.hour.clone(),
-                    temp_f: hour.temp_f,
-                    code: hour.code,
-                })
-                .collect(),
-            daily: forecast
-                .daily
-                .iter()
-                .map(|day| ForecastDay {
-                    day: day.day.clone(),
-                    high_f: day.high_f,
-                    low_f: day.low_f,
-                    code: day.code,
-                })
-                .collect(),
-            alerts,
-        };
-
-        let image = views::render_clear(&self.fonts, &input, now, self.timezone, &palette)?;
+        let image =
+            views::render_clear(&self.fonts, forecast, alerts, now, self.timezone, &palette)?;
         image.write_png(&self.paths.output_img())?;
         Ok(())
     }
@@ -151,7 +118,7 @@ impl Renderer for Engine {
     fn render_clear(
         &self,
         forecast: &Forecast,
-        alerts: Vec<Alert>,
+        alerts: &[Alert],
         now: DateTime<Utc>,
     ) -> Result<()> {
         Engine::render_clear(self, forecast, alerts, now)

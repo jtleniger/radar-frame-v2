@@ -142,8 +142,8 @@ impl Default for MockProvider {
 
 #[async_trait]
 impl ForecastProvider for MockProvider {
-    async fn forecast(&self) -> Result<&Forecast> {
-        Ok(&self.forecast)
+    async fn forecast(&self) -> Result<Forecast> {
+        Ok(self.forecast.clone())
     }
 
     async fn alerts(&self) -> Result<Vec<Alert>> {

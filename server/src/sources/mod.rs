@@ -4,6 +4,7 @@
 //! `sources/mock_forecast.py` for offline development and fixtures. The data
 //! types are `frame-view`'s, so the composed image consumes them directly.
 
+pub mod http;
 pub mod mock;
 pub mod nexrad;
 pub mod nws;
@@ -13,12 +14,13 @@ pub mod osm;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
 use crate::error::Result;
 use crate::view::forecast::{Alert, CurrentConditions, ForecastDay, ForecastHour};
 
 /// One forecast cycle: what the clear view draws and nothing else.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Forecast {
     pub current: CurrentConditions,
     pub hourly: Vec<ForecastHour>,
@@ -48,9 +50,10 @@ pub struct Object {
 
 #[async_trait]
 pub trait ForecastProvider: Send + Sync {
-    /// Current conditions plus the hourly and daily panels. Called at most once
-    /// per update cycle; the online provider fetches all of it in one request.
-    async fn forecast(&self) -> Result<&Forecast>;
+    /// Current conditions plus the hourly and daily panels. Called once per
+    /// update cycle, so each Clear frame gets a fresh forecast; the online
+    /// provider fetches all of it in one request.
+    async fn forecast(&self) -> Result<Forecast>;
 
     async fn alerts(&self) -> Result<Vec<Alert>>;
 

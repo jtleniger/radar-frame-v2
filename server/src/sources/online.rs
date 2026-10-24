@@ -12,29 +12,18 @@ use crate::view::forecast::Alert;
 pub struct OnlineProvider {
     client: reqwest::Client,
     config: Config,
-    forecast: tokio::sync::OnceCell<Forecast>,
 }
 
 impl OnlineProvider {
     pub fn new(client: reqwest::Client, config: Config) -> Self {
-        OnlineProvider {
-            client,
-            config,
-            // Filled once per provider instance, which is once per update cycle
-            // in `api::frame`; this is why the three panels share one request.
-            forecast: tokio::sync::OnceCell::new(),
-        }
+        OnlineProvider { client, config }
     }
 }
 
 #[async_trait]
 impl ForecastProvider for OnlineProvider {
-    async fn forecast(&self) -> Result<&Forecast> {
-        self.forecast
-            .get_or_try_init(|| async {
-                open_meteo::fetch(&self.client, &self.config, chrono::Utc::now()).await
-            })
-            .await
+    async fn forecast(&self) -> Result<Forecast> {
+        open_meteo::fetch(&self.client, &self.config, chrono::Utc::now()).await
     }
 
     async fn alerts(&self) -> Result<Vec<Alert>> {
