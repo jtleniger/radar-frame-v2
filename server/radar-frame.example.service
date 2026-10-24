@@ -1,15 +1,24 @@
 [Unit]
 Description=Radar Frame
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=6
 
 [Service]
 Type=simple
 User=radar-frame
 Group=radar-frame
-WorkingDirectory=/opt/radar-frame
-ExecStart=/opt/radar-frame/bin/radar-frame serve
-Restart=always
+# %h is the service user's home. The deployment, its data, and the rotating
+# log all live under <home>/radar-frame.
+WorkingDirectory=%h/radar-frame
+ExecStart=%h/radar-frame/bin/radar-frame serve
+Restart=on-failure
 RestartSec=10
+MemoryHigh=800M
+MemoryMax=1G
+ProtectSystem=strict
+ReadWritePaths=%h/radar-frame
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

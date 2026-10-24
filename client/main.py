@@ -28,7 +28,7 @@ def get_config():
 
 
 def get(url) -> requests.Response:
-    response = requests.get(url)
+    response = requests.get(url, timeout=(5, 30))
 
     if response.status_code == HTTPStatus.OK:
         return response

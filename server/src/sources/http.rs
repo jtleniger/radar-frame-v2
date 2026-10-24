@@ -5,7 +5,7 @@
 //! carries an explicit `Accept`. Each call logs one structured event with its
 //! status, latency, and size, never the body itself.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use reqwest::header::ACCEPT;
 use reqwest::Url;
@@ -14,6 +14,12 @@ use crate::error::{Error, Result};
 
 /// Upper bound on a decompressed upstream response body.
 pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Connection establishment budget for every upstream request.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Total budget for one upstream request, including the response body.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How much of a failed response's body to keep for the error message.
 const MAX_ERROR_BODY_BYTES: usize = 512;

@@ -31,6 +31,11 @@ use crate::setup;
 use crate::sources::{ForecastProvider, RadarSource};
 use crate::state::{Mode, ModeSelect, State};
 
+/// Upper bound for one `/frame` render cycle. Each upstream call is bounded
+/// by the HTTP client timeouts; this caps the whole sequence plus rendering so
+/// one poll cannot hold the state lock forever.
+const CYCLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
+
 pub struct AppState {
     pub config: Config,
     pub paths: Paths,
@@ -488,7 +493,15 @@ async fn frame(
 
         let mode = state.mode;
         let cycle_started = Instant::now();
-        let cycle = match modes::run(mode, &deps, &mut state).await {
+        let cycle =
+            match tokio::time::timeout(CYCLE_DEADLINE, modes::run(mode, &deps, &mut state)).await {
+                Ok(result) => result,
+                Err(_) => Err(Error::new(format!(
+                    "cycle exceeded the {} s deadline",
+                    CYCLE_DEADLINE.as_secs()
+                ))),
+            };
+        let cycle = match cycle {
             Ok(cycle) => cycle,
             Err(error) => {
                 let elapsed = cycle_started.elapsed();
@@ -641,6 +654,45 @@ pub async fn serve(state: Arc<AppState>, address: std::net::SocketAddr) -> Resul
         .map_err(|e| Error(format!("{address}: {e}")))?;
     tracing::info!("listening on {address}");
     axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown_signal())
         .await
-        .map_err(|e| Error(format!("server: {e}")))
+        .map_err(|e| Error(format!("server: {e}")))?;
+    tracing::info!(event = "shutdown", "server stopped");
+    Ok(())
+}
+
+/// Resolves on SIGTERM or SIGINT so `axum` drains in-flight requests instead
+/// of dropping connections mid-response.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!(event = "shutdown", signal = "SIGINT", "stopping");
+                    }
+                    _ = terminate.recv() => {
+                        tracing::info!(event = "shutdown", signal = "SIGTERM", "stopping");
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!(
+                    event = "shutdown",
+                    signal = "SIGTERM",
+                    error = %error,
+                    "signal handler unavailable; waiting for SIGINT"
+                );
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::info!(event = "shutdown", signal = "SIGINT", "stopping");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!(event = "shutdown", signal = "SIGINT", "stopping");
+    }
 }
