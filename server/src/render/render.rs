@@ -71,13 +71,6 @@ pub(crate) fn load_frame(
     Ok((transform, streets, table))
 }
 
-/// `gdal_calc.py`'s `numpy.max((A, B, C), axis=0)` over the elevation grids.
-pub(crate) fn merge(composite: &mut [u8], grid: &[u8]) {
-    for (slot, value) in composite.iter_mut().zip(grid) {
-        *slot = (*slot).max(*value);
-    }
-}
-
 /// Uncovered pixels stay 0: the old `gdal_rasterize` left them at its init
 /// value without declaring a nodata value, so `gdal_calc.py` kept them at 0 and
 /// the color table's `0 0 0 0 0` entry (alpha 0) made the gated-out background
@@ -151,13 +144,6 @@ mod tests {
         assert_eq!(blend(255, 1, 1), 254);
         assert_eq!(blend(17, 255, 255), 255);
         assert_eq!(blend(17, 0, 0), 17);
-    }
-
-    #[test]
-    fn merge_keeps_the_highest_elevation_value() {
-        let mut composite = vec![0, 20, 10, 30];
-        merge(&mut composite, &[41, 10, 30, 30]);
-        assert_eq!(composite, vec![41, 20, 30, 30]);
     }
 
     /// Gated-out and uncovered pixels stay 0, which the shipped table maps to

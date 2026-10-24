@@ -1,8 +1,8 @@
 //! Archive II volume -> radar frame PNG in one pass.
 //!
 //! Reads the volume with [`crate::nexrad::archive2::read_volume`], projects
-//! each gate with [`build_bins`], and rasterizes straight into the
-//! per-elevation byte grids. This is the only radar renderer.
+//! each gate with [`for_each_bin`], and max-composites straight into the
+//! output grid. This is the only radar renderer.
 //!
 //! Coordinates and values are rounded through
 //! [`crate::nexrad::bins::round_coordinate`] /
@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use crate::nexrad::archive2::{read_volume, Product, Radial, Volume};
-use crate::nexrad::bins::{build_bins, round_coordinate, round_value};
+use crate::nexrad::bins::{for_each_bin, round_coordinate, round_value};
 use crate::nexrad::geo::{shortest_f32_degrees, Ortho};
 
 use crate::render::raster::{self, Transform};
@@ -78,7 +78,6 @@ pub fn render_archive(options: &Options) -> Result<Summary> {
     );
 
     let mut composite = vec![0u8; options.width * options.height];
-    let mut pixel_ring = Vec::with_capacity(5);
     let mut summary = Summary::default();
     for &elevation in &options.elevations {
         let Some(scan) = volume.scans.get(&elevation) else {
@@ -93,30 +92,27 @@ pub fn render_archive(options: &Options) -> Result<Summary> {
         summary.elevations.push(elevation);
         summary.radials += scan.len();
 
-        let mut grid = vec![0u8; options.width * options.height];
         for radial in scan {
-            let bins = build_bins(
+            summary.gates += for_each_bin(
+                &volume,
                 radial,
                 Product::Ref,
                 &ortho,
                 options.minimum,
                 options.maximum,
+                |ring, value| {
+                    rasterize_bin(
+                        &mut composite,
+                        &transform,
+                        options.width,
+                        options.height,
+                        ring,
+                        value,
+                    );
+                },
             )
             .map_err(|e| Error(format!("{}: {e}", options.archive.display())))?;
-            summary.gates += bins.len();
-            for bin in bins {
-                rasterize_bin(
-                    &mut grid,
-                    &transform,
-                    options.width,
-                    options.height,
-                    &mut pixel_ring,
-                    &bin.ring,
-                    bin.value,
-                );
-            }
         }
-        render::merge(&mut composite, &grid);
     }
 
     if summary.elevations.is_empty() {
@@ -146,28 +142,26 @@ fn origin_radial(volume: &Volume) -> Option<&Radial> {
     volume.scans.values().find_map(|scan| scan.first())
 }
 
-/// One gate as a single-ring polygon, with the precision of the pre-fusion
+/// One gate as an open four-corner ring, at the precision of the pre-fusion
 /// serialized output.
 fn rasterize_bin(
-    grid: &mut [u8],
+    composite: &mut [u8],
     transform: &Transform,
     width: usize,
     height: usize,
-    pixel_ring: &mut Vec<[f64; 2]>,
-    ring: &[(f64, f64); 5],
+    ring: &[(f64, f64); 4],
     value: f32,
 ) {
-    pixel_ring.clear();
-    for &(lon, lat) in ring {
-        let (x, y) = transform.pixel(round_coordinate(lon), round_coordinate(lat));
-        pixel_ring.push([x, y]);
+    let mut pixel_ring = [(0.0, 0.0); 4];
+    for (point, &(lon, lat)) in pixel_ring.iter_mut().zip(ring) {
+        *point = transform.pixel(round_coordinate(lon), round_coordinate(lat));
     }
 
-    raster::fill_polygon(
-        grid,
+    raster::fill_ring_max(
+        composite,
         width,
         height,
-        std::slice::from_ref(pixel_ring),
+        &pixel_ring,
         raster::burn_value(round_value(value)),
     );
 }
@@ -193,9 +187,10 @@ mod tests {
 
     #[test]
     fn origin_uses_the_first_scan_with_radials() {
-        let volume = Volume {
-            scans: BTreeMap::from([(1, Vec::new()), (2, vec![radial(35.5, -97.5, 2)])]),
-        };
+        let volume = Volume::from_payload(
+            BTreeMap::from([(1, Vec::new()), (2, vec![radial(35.5, -97.5, 2)])]),
+            Vec::new(),
+        );
 
         let origin = origin_radial(&volume).expect("elevation 2 anchors the frame");
         assert_eq!(origin.volume.lat, 35.5);
@@ -204,9 +199,7 @@ mod tests {
 
     #[test]
     fn no_radials_has_no_origin() {
-        let volume = Volume {
-            scans: BTreeMap::new(),
-        };
+        let volume = Volume::from_payload(BTreeMap::new(), Vec::new());
         assert!(origin_radial(&volume).is_none());
     }
 }
