@@ -1,5 +1,5 @@
 [x] Use the `scc` tool to analyze complexity. Plan a refactor and aim to get all Rust files, tests excluded, down to 500 lines or less, and complexity 70 or less. As part of this, organize code into sensible folders: nearly everything has ended up in the root of `src`.
-[] Show the data provided by the `/status` endpoint on home page in a clean, easy to digest format and clean up the home page UI and keep the same mobile friendly, simple theme, but make it a bit better looking
+[x] Show the data provided by the `/status` endpoint on home page in a clean, easy to digest format and clean up the home page UI and keep the same mobile friendly, simple theme, but make it a bit better looking
 [] Simplify the CLI, and implement mock alerts if they're not already there (setup, serve, check clear/radar/warnings with/without mocks)
 [] Refactor poorly named variables: they should be concise (no more than 3 words) but descriptive. Some examples that caught my eye: deps, engine, object: what do those do?
 [] Update client to incorporate server changes (unmodified, 500, 503, status, healthz, readyz, etc.)

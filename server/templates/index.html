@@ -1,16 +1,54 @@
 {% extends "layouts/layout.html" %}
 {% block body %}
-<section class="title">
-<h1>Radar Frame</h1>
-</section>
-<section class="current-frame">
-    <img src="/frame?debug=true" />
-</section>
-<section class="info">
-    <span>Last Updated</span>
-    <span>{{ last_updated }}</span>
-</section>
-<section class="settings">
+<header class="masthead">
+    <div>
+        <h1>Radar Frame</h1>
+        <p class="subtitle">{{ radar_id }} · v{{ version }}</p>
+    </div>
+    <span class="pill{% if !ready %} pill-error{% endif %}">{% if ready %}Ready{% else %}Not ready{% endif %}</span>
+</header>
+
+{% if !ready %}
+<p class="notice notice-error">Not ready: {{ ready_reason }}</p>
+{% endif %}
+
+<figure class="frame">
+    {% if frame_available %}
+    <img src="/frame?debug=true" alt="Latest radar frame" width="800" height="444" />
+    <figcaption>{{ frame_caption }}</figcaption>
+    {% else %}
+    <div class="frame-empty">{{ frame_caption }}</div>
+    {% endif %}
+</figure>
+
+{% if has_frame_degraded %}
+<p class="notice notice-warn">Degraded frame: {{ frame_degraded }}</p>
+{% endif %}
+
+<div class="status">
+{% for group in groups %}
+    <section class="panel">
+        <h2>{{ group.title }}</h2>
+        <dl class="stats">
+        {% for stat in group.stats %}
+            <div class="stat">
+                <dt>{{ stat.label }}</dt>
+                <dd class="tone-{{ stat.tone }}">{{ stat.value }}<small>{{ stat.hint }}</small></dd>
+            </div>
+        {% endfor %}
+        </dl>
+    </section>
+{% endfor %}
+</div>
+
+<section class="panel settings">
+    <h2>Display</h2>
     {% include "partials/settings.html" %}
 </section>
+
+<footer class="footer">
+    <a href="/status">Status JSON</a>
+    <span>·</span>
+    <a href="/readyz">Readiness probe</a>
+</footer>
 {% endblock %}

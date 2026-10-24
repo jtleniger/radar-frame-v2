@@ -11,7 +11,7 @@ use crate::service::setup;
 use crate::state::State;
 
 use super::pages::{fields, html, FrameQuery, IndexPage, SettingsForm, SettingsPage};
-use super::status::readiness;
+use super::status::{readiness, Status};
 use super::updater::Update;
 use super::AppState;
 
@@ -44,16 +44,12 @@ fn text_response(status: StatusCode, body: &str) -> Response {
 }
 
 pub async fn index(AxumState(app): AxumState<Arc<AppState>>) -> Result<Response> {
-    let snapshot = app.snapshot();
-    let fields = fields(&snapshot.state, app.settings.timezone);
-
-    html(IndexPage {
-        mode: fields.mode,
-        mode_select: fields.mode_select,
-        last_updated: fields.last_updated,
-        manual_til: fields.manual_til,
-        has_manual_til: fields.has_manual_til,
-    })
+    let status = Status::build(&app);
+    html(IndexPage::new(
+        &app.settings.nexrad_id,
+        status,
+        app.settings.timezone,
+    ))
 }
 
 pub async fn settings(

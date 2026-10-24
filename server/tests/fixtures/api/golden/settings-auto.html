@@ -1,19 +1,20 @@
-<form hx-post="/settings" hx-trigger="change" hx-swap="outerHTML">
-    <div>
-        <span>Mode Selection</span>
-        
-    </div>
-    <fieldset>
-        <label for="auto" class="active">Auto</label>
-        <input type="radio" autocomplete="off" id="auto" name="mode-select" value="Auto" checked="checked">
-        <label for="manual" >Manual</label>
-        <input type="radio" autocomplete="off" id="manual" name="mode-select" value="Manual" >
+<form class="settings-form" hx-post="/settings" hx-trigger="change" hx-swap="outerHTML">
+    <fieldset class="segment">
+        <legend>Mode selection</legend>
+        <div class="segment-options">
+            <input type="radio" autocomplete="off" id="auto" name="mode-select" value="Auto" checked="checked">
+            <label for="auto">Auto</label>
+            <input type="radio" autocomplete="off" id="manual" name="mode-select" value="Manual" >
+            <label for="manual">Manual</label>
+        </div>
     </fieldset>
-    <span>Mode</span>
-    <fieldset disabled="disabled">
-        <label for="clear" class="active">Clear</label>
-        <input type="radio" autocomplete="off" id="clear" name="mode" value="Clear" checked="checked">
-        <label for="storm" >Storm</label>
-        <input type="radio" autocomplete="off" id="storm" name="mode" value="Storm" >
+    <fieldset class="segment" disabled="disabled">
+        <legend>Mode</legend>
+        <div class="segment-options">
+            <input type="radio" autocomplete="off" id="clear" name="mode" value="Clear" checked="checked">
+            <label for="clear">Clear</label>
+            <input type="radio" autocomplete="off" id="storm" name="mode" value="Storm" >
+            <label for="storm">Storm</label>
+        </div>
     </fieldset>
 </form>

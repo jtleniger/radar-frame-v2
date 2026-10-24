@@ -1,45 +1,161 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
     <head>
+        <meta charset="utf-8" />
         <title>Radar Frame</title>
-        <link rel="stylesheet" href="static/style.css" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="dark" />
+        <meta name="theme-color" content="#191919" />
+        <link rel="stylesheet" href="static/style.css" />
         <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
     </head>
     <body>
         <main class="content">
             
-<section class="title">
-<h1>Radar Frame</h1>
-</section>
-<section class="current-frame">
-    <img src="/frame?debug=true" />
-</section>
-<section class="info">
-    <span>Last Updated</span>
-    <span>None</span>
-</section>
-<section class="settings">
-    <form hx-post="/settings" hx-trigger="change" hx-swap="outerHTML">
+<header class="masthead">
     <div>
-        <span>Mode Selection</span>
-        
+        <h1>Radar Frame</h1>
+        <p class="subtitle">KTLX · v0.1.0</p>
     </div>
-    <fieldset>
-        <label for="auto" class="active">Auto</label>
-        <input type="radio" autocomplete="off" id="auto" name="mode-select" value="Auto" checked="checked">
-        <label for="manual" >Manual</label>
-        <input type="radio" autocomplete="off" id="manual" name="mode-select" value="Manual" >
+    <span class="pill pill-error">Not ready</span>
+</header>
+
+
+<p class="notice notice-error">Not ready: no frame published</p>
+
+
+<figure class="frame">
+    
+    <div class="frame-empty">Waiting for the first frame</div>
+    
+</figure>
+
+
+
+<div class="status">
+
+    <section class="panel">
+        <h2>Schedule</h2>
+        <dl class="stats">
+        
+            <div class="stat">
+                <dt>Mode</dt>
+                <dd class="tone-">Clear<small>Automatic</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Updated</dt>
+                <dd class="tone-">Never<small></small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Attempted</dt>
+                <dd class="tone-">Never<small></small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Next update</dt>
+                <dd class="tone-">As soon as possible<small></small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Failures</dt>
+                <dd class="tone-ok">0<small>In a row</small></dd>
+            </div>
+        
+        </dl>
+    </section>
+
+    <section class="panel">
+        <h2>Radar</h2>
+        <dl class="stats">
+        
+            <div class="stat">
+                <dt>Station</dt>
+                <dd class="tone-warn">Unknown<small>No status sample yet</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Volume</dt>
+                <dd class="tone-">—<small>No volume downloaded yet</small></dd>
+            </div>
+        
+        </dl>
+    </section>
+
+    <section class="panel">
+        <h2>Service</h2>
+        <dl class="stats">
+        
+            <div class="stat">
+                <dt>Uptime</dt>
+                <dd class="tone-">0s<small>Since Oct 21, 10:30 AM</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Data directory</dt>
+                <dd class="tone-ok">Writable<small>Frame output location</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Requests</dt>
+                <dd class="tone-">1<small>Since start</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Cycles</dt>
+                <dd class="tone-">0<small>0 failed · 0 degraded</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Upstream</dt>
+                <dd class="tone-">0<small>0 failed</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Last cycle</dt>
+                <dd class="tone-">—<small>No sample yet</small></dd>
+            </div>
+        
+            <div class="stat">
+                <dt>Last upstream</dt>
+                <dd class="tone-">—<small>No sample yet</small></dd>
+            </div>
+        
+        </dl>
+    </section>
+
+</div>
+
+<section class="panel settings">
+    <h2>Display</h2>
+    <form class="settings-form" hx-post="/settings" hx-trigger="change" hx-swap="outerHTML">
+    <fieldset class="segment">
+        <legend>Mode selection</legend>
+        <div class="segment-options">
+            <input type="radio" autocomplete="off" id="auto" name="mode-select" value="Auto" checked="checked">
+            <label for="auto">Auto</label>
+            <input type="radio" autocomplete="off" id="manual" name="mode-select" value="Manual" >
+            <label for="manual">Manual</label>
+        </div>
     </fieldset>
-    <span>Mode</span>
-    <fieldset disabled="disabled">
-        <label for="clear" class="active">Clear</label>
-        <input type="radio" autocomplete="off" id="clear" name="mode" value="Clear" checked="checked">
-        <label for="storm" >Storm</label>
-        <input type="radio" autocomplete="off" id="storm" name="mode" value="Storm" >
+    <fieldset class="segment" disabled="disabled">
+        <legend>Mode</legend>
+        <div class="segment-options">
+            <input type="radio" autocomplete="off" id="clear" name="mode" value="Clear" checked="checked">
+            <label for="clear">Clear</label>
+            <input type="radio" autocomplete="off" id="storm" name="mode" value="Storm" >
+            <label for="storm">Storm</label>
+        </div>
     </fieldset>
 </form>
 </section>
+
+<footer class="footer">
+    <a href="/status">Status JSON</a>
+    <span>·</span>
+    <a href="/readyz">Readiness probe</a>
+</footer>
 
         </main>
     </body>
