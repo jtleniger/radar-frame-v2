@@ -78,16 +78,27 @@ cargo zigbuild --release --manifest-path client/Cargo.toml \
   --target aarch64-unknown-linux-musl
 ```
 
-For a 32-bit Raspberry Pi OS (`uname -m` prints `armv7l`):
+For a 32-bit Raspberry Pi OS, pick the target from `uname -m` on the Pi:
+
+- `armv7l` (Pi 2, Pi 3/4/5 running a 32-bit OS): `armv7-unknown-linux-musleabihf`
+- `armv6l` (Pi 1 Model A/A+/B/B+, Pi Zero, Pi Zero W):
+  `arm-unknown-linux-musleabihf`
 
 ```sh
+# ARMv7, 32-bit
 rustup target add armv7-unknown-linux-musleabihf
 cargo zigbuild --release --manifest-path client/Cargo.toml \
   --target armv7-unknown-linux-musleabihf
+
+# ARMv6, 32-bit (original Pi 1 and Pi Zero)
+rustup target add arm-unknown-linux-musleabihf
+cargo zigbuild --release --manifest-path client/Cargo.toml \
+  --target arm-unknown-linux-musleabihf
 ```
 
-A Pi Zero with a 32-bit `armv6` OS needs
-`arm-unknown-linux-musleabihf`. Check with `uname -m` on the Pi.
+An ARMv7 binary will crash with an illegal instruction on an ARMv6 Pi, so
+verify the artifact with `readelf -A`: the ARMv6 build reports
+`Tag_CPU_arch: v6` and `Tag_FP_arch: VFPv2`.
 
 ### Cross-compile with cross (Docker)
 
