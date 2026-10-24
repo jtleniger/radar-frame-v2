@@ -121,10 +121,10 @@ ID form: `<category>.<finding>.<action>`.
 | [rejected] | ~~3.5.1~~ | ~~Localhost default; auth/rate limit public endpoints~~ |
 | [x] | 4.1.1 | Paginate S3 listing; handle MDM-only days |
 | [x] | 4.2.1 | Accept partial elevations; pick first available origin |
-| [ ] | 4.3.1 | Reusable ring fill with no per-gate allocations |
-| [ ] | 4.3.2 | Fixed-point rounding instead of `format!`/`parse` |
-| [ ] | 4.3.3 | Burn max directly into the composite |
-| [ ] | 4.3.4 | Borrow moment slices |
+| [x] | 4.3.1 | Reusable ring fill with no per-gate allocations |
+| [x] | 4.3.2 | Fixed-point rounding instead of `format!`/`parse` |
+| [x] | 4.3.3 | Burn max directly into the composite |
+| [x] | 4.3.4 | Borrow moment slices |
 | [x] | 5.1.1 | Remove process-lifetime forecast cache |
 | [x] | 5.1.2 | Two-cycle forecast refresh test |
 | [ ] | 5.2.1 | Split provider traits/snapshot |
