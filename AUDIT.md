@@ -138,7 +138,7 @@ ID form: `<category>.<finding>.<action>`.
 | [x] | 7.2.1 | Upstream and handler timeouts |
 | [x] | 7.2.2 | Graceful shutdown + panic hook |
 | [ ] | 7.3.1 | Typed errors + HTTP mapping |
-| [ ] | 7.4.1 | Startup validation |
+| [x] | 7.4.1 | Startup validation |
 | [x] | 7.5.1 | systemd hardening |
 | [ ] | 7.6.1 | Add regression tests |
 

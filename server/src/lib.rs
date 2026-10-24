@@ -23,5 +23,6 @@ pub mod paths;
 pub mod render;
 pub mod setup;
 pub mod sources;
+pub mod startup;
 pub mod state;
 pub mod view;

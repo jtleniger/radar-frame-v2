@@ -236,29 +236,31 @@ async fn serve(args: Serve) -> Result<()> {
     setup::create_data_dir(&paths)?;
     setup::create_palette(&paths)?;
 
+    // Fail before binding when the first frame could not be produced: a bad
+    // bbox, missing zone, default user agent, unusable palette, or read-only
+    // data directory. The street mask is validated but remains optional.
+    let validated = crate::startup::validate(&config, &paths)?;
+
     let bbox = format!(
         "{},{},{},{}",
-        config.get("bbox", "min_lon")?,
-        config.get("bbox", "min_lat")?,
-        config.get("bbox", "max_lon")?,
-        config.get("bbox", "max_lat")?
+        validated.bounds.min_lon,
+        validated.bounds.min_lat,
+        validated.bounds.max_lon,
+        validated.bounds.max_lat
     );
-    let zones = format!(
-        "{},{}",
-        config.get_opt("nws", "zone").unwrap_or("-"),
-        config.get_opt("nws", "fire_zone").unwrap_or("-")
-    );
+    let zones = format!("{},{}", validated.zone, validated.fire_zone);
     tracing::info!(
         event = "startup",
         version = env!("CARGO_PKG_VERSION"),
         bind = %args.bind,
-        station = config.get_opt("radar", "nexrad_id").unwrap_or("-"),
+        station = %validated.nexrad_id,
         bbox = %bbox,
-        timezone = config.get_opt("forecast", "timezone").unwrap_or("-"),
+        timezone = %validated.timezone,
         zones = %zones,
-        user_agent = config.user_agent(),
+        user_agent = %validated.user_agent,
         data = %paths.data_dir().display(),
         data_writable = setup::data_writable(&paths),
+        streets = validated.streets,
         endpoint_forecast = crate::sources::open_meteo::BASE_URL,
         endpoint_nws = crate::sources::nws::BASE_URL,
         endpoint_radar = crate::sources::nexrad::BASE_URL,
