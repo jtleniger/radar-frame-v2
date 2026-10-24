@@ -1,8 +1,12 @@
 //! Process state and the mode schedule, ported from `state/state.py`,
 //! `modes/mode.py`, and `modes/mode_select.py`.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
+
+use crate::frame::PublishedFrame;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -65,6 +69,9 @@ pub struct State {
     pub mode: Mode,
     pub mode_select: ModeSelect,
     pub manual_til: Option<DateTime<Utc>>,
+    /// Last frame that rendered and validated successfully. Kept across
+    /// upstream failures so `/frame` can serve it instead of `503`.
+    pub frame: Option<Arc<PublishedFrame>>,
 }
 
 impl State {
@@ -75,6 +82,7 @@ impl State {
             mode: Mode::Clear,
             mode_select: ModeSelect::Auto,
             manual_til: None,
+            frame: None,
         }
     }
 
