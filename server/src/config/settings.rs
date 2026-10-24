@@ -26,6 +26,8 @@ pub struct Settings {
     pub zone: String,
     pub fire_zone: String,
     pub user_agent: String,
+    /// `User-Agent` sent with Overpass street-data requests.
+    pub osm_user_agent: String,
     /// Optional `[render] colors` override; the embedded table is the default.
     pub colors: Option<PathBuf>,
     /// True when a correctly sized street mask is present. A missing mask is
@@ -51,12 +53,8 @@ impl Settings {
 
         let zone = required(config, "nws", "zone")?;
         let fire_zone = required(config, "nws", "fire_zone")?;
-        let user_agent = config.user_agent().trim();
-        if user_agent.is_empty() || user_agent == DEFAULT_USER_AGENT {
-            return Err(Error::config(
-                "config: [nws] user_agent must identify a contact; the NWS API requires one",
-            ));
-        }
+        let user_agent = contact_user_agent(config, "nws", "NWS")?;
+        let osm_user_agent = contact_user_agent(config, "osm", "Overpass")?;
 
         Ok(Settings {
             nexrad_id,
@@ -66,11 +64,27 @@ impl Settings {
             longitude,
             zone,
             fire_zone,
-            user_agent: user_agent.to_string(),
+            user_agent,
+            osm_user_agent,
             colors: config.colors(),
             streets: false,
         })
     }
+}
+
+/// A user agent has to identify a contact, not the generic fallback. Both the
+/// NWS API and Overpass ask for one.
+fn contact_user_agent(config: &Config, section: &str, provider: &str) -> Result<String> {
+    let value = config
+        .get_opt(section, "user_agent")
+        .unwrap_or(DEFAULT_USER_AGENT)
+        .trim();
+    if value.is_empty() || value == DEFAULT_USER_AGENT {
+        return Err(Error::config(format!(
+            "config: [{section}] user_agent must identify a contact; the {provider} API requires one"
+        )));
+    }
+    Ok(value.to_string())
 }
 
 fn required(config: &Config, section: &str, key: &str) -> Result<String> {

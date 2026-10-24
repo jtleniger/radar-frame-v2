@@ -91,7 +91,13 @@ async fn setup_command(args: Setup) -> Result<()> {
     setup::create_palette(&paths)?;
 
     let client = http_client(&config)?;
-    setup::create_streets(&paths, &config, &Overpass::new(client), args.force_streets).await
+    setup::create_streets(
+        &paths,
+        &config,
+        &Overpass::new(client, config.osm_user_agent()),
+        args.force_streets,
+    )
+    .await
 }
 
 async fn run(cli: Cli) -> Result<()> {

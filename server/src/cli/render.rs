@@ -118,8 +118,13 @@ async fn render_volume(args: RenderVolume) -> Result<()> {
     setup::create_palette(&paths)?;
 
     let client = http_client(&config)?;
-    if let Err(error) =
-        setup::create_streets(&paths, &config, &Overpass::new(client), args.force_streets).await
+    if let Err(error) = setup::create_streets(
+        &paths,
+        &config,
+        &Overpass::new(client, config.osm_user_agent()),
+        args.force_streets,
+    )
+    .await
     {
         tracing::warn!(
             event = "streets_unavailable",

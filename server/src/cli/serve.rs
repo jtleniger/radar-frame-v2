@@ -51,7 +51,7 @@ pub async fn serve(args: Serve) -> Result<()> {
         if let Err(error) = setup::retry_streets(
             &streets_paths,
             &streets_config,
-            &Overpass::new(streets_client),
+            &Overpass::new(streets_client, streets_config.osm_user_agent()),
             setup::StreetsRetry::default(),
         )
         .await
@@ -96,6 +96,7 @@ fn log_startup(args: &Serve, paths: &crate::config::Paths, settings: &crate::con
         timezone = %settings.timezone,
         zones = %zones,
         user_agent = %settings.user_agent,
+        osm_user_agent = %settings.osm_user_agent,
         data = %paths.data_dir().display(),
         data_writable = setup::data_writable(paths),
         streets = settings.streets,

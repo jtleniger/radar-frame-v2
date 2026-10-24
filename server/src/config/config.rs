@@ -12,9 +12,9 @@ use chrono_tz::Tz;
 
 use crate::error::{Error, Result};
 
-/// `User-Agent` sent when the settings file has no `[nws] user_agent`. The
-/// example settings file provides a contact placeholder; the NWS API asks for
-/// one.
+/// `User-Agent` sent when the settings file has no `[nws]` or `[osm]`
+/// `user_agent`. The example settings file provides contact placeholders; both
+/// the NWS API and Overpass ask for one.
 pub const DEFAULT_USER_AGENT: &str = "radar-frame";
 
 #[derive(Clone, Debug, Default)]
@@ -104,7 +104,16 @@ impl Config {
     }
 
     pub fn user_agent(&self) -> &str {
-        self.get_opt("nws", "user_agent")
+        self.section_user_agent("nws")
+    }
+
+    /// `User-Agent` sent with Overpass requests, from `[osm] user_agent`.
+    pub fn osm_user_agent(&self) -> &str {
+        self.section_user_agent("osm")
+    }
+
+    fn section_user_agent(&self, section: &str) -> &str {
+        self.get_opt(section, "user_agent")
             .filter(|value| !value.is_empty())
             .unwrap_or(DEFAULT_USER_AGENT)
     }
@@ -138,6 +147,9 @@ timezone = America/Chicago
 
 [nws]
 user_agent = (someone@example.com)
+
+[osm]
+user_agent = (osm@example.com)
 ";
 
     #[test]
@@ -179,6 +191,15 @@ user_agent = (someone@example.com)
 
         let configured = Config::parse("[nws]\nuser_agent = (contact@example.com)\n").unwrap();
         assert_eq!(configured.user_agent(), "(contact@example.com)");
+    }
+
+    #[test]
+    fn osm_user_agent_defaults_and_can_be_overridden() {
+        let default = Config::parse("[radar]\nnexrad_id = KTLX\n").unwrap();
+        assert_eq!(default.osm_user_agent(), "radar-frame");
+
+        let configured = Config::parse("[osm]\nuser_agent = (osm@example.com)\n").unwrap();
+        assert_eq!(configured.osm_user_agent(), "(osm@example.com)");
     }
 
     #[test]
