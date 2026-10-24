@@ -230,7 +230,7 @@ mod tests {
     fn parses_fixture() {
         let volume = read_volume(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/nexrad/ktlx-mini.ar2"
+            "/assets/ktlx-mini.ar2"
         )))
         .expect("fixture parses");
         assert_eq!(volume.scans.len(), 1);

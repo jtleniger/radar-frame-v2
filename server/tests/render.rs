@@ -7,10 +7,7 @@ use radar_frame::render::pngio;
 
 const BIN: &str = env!("CARGO_BIN_EXE_radar-frame");
 
-const MINI_ARCHIVE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/nexrad/ktlx-mini.ar2"
-);
+const MINI_ARCHIVE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/ktlx-mini.ar2");
 
 /// `render archive` over the ktlx-mini fixture bbox (`tests/fixtures/frame/README.md`).
 fn fixture_frame_args(archive: &Path, streets: &Path, output: &Path) -> Vec<String> {

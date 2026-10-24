@@ -76,3 +76,17 @@ fn clear_mock_renders_a_frame_with_alerts() {
     assert!(stdout.contains("warnings: 3 active of 3"), "{stdout}");
     assert!(root.join("data/frame.png").is_file());
 }
+
+#[test]
+fn radar_mock_renders_the_embedded_volume() {
+    let (_dir, root) = fixture();
+    let output = run(&root, &["demo", "radar", "--mock"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let stdout = stdout(&output);
+    assert!(stdout.contains("volume: mock/KTLX-mini.ar2"), "{stdout}");
+    assert!(stdout.contains("warnings: 3 active"), "{stdout}");
+    for artifact in ["nexrad-latest.ar2", "nexrad-latest.png", "frame.png"] {
+        assert!(root.join("data").join(artifact).is_file(), "{artifact}");
+    }
+}

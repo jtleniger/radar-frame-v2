@@ -770,7 +770,7 @@ async fn storm_frame_matches_flask() {
             key: "2026/10/21/KTLX/KTLX20261021_153000_V06".into(),
             last_modified: now() - chrono::Duration::minutes(30),
         }),
-        bytes: std::fs::read(manifest("tests/fixtures/nexrad/ktlx-mini.ar2")).unwrap(),
+        bytes: std::fs::read(manifest("assets/ktlx-mini.ar2")).unwrap(),
         downloads: Arc::new(AtomicUsize::new(0)),
     };
     let downloads = Arc::clone(&radar.downloads);
@@ -1477,7 +1477,7 @@ async fn restart_restores_the_schedule_and_reuses_the_volume() {
         key: "2026/10/21/KTLX/KTLX20261021_150000_V06".into(),
         last_modified: now() - chrono::Duration::minutes(30),
     };
-    let bytes = std::fs::read(manifest("tests/fixtures/nexrad/ktlx-mini.ar2")).unwrap();
+    let bytes = std::fs::read(manifest("assets/ktlx-mini.ar2")).unwrap();
     let downloads = Arc::new(AtomicUsize::new(0));
 
     let radar = Arc::new(FakeRadar {
