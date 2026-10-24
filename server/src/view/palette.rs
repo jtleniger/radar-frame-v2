@@ -116,7 +116,7 @@ impl Palette {
 /// Write the e-ink palette as a 7x1 indexed PNG, which is what
 /// `setup/palette.py` used to produce.
 pub fn write_eink_png(path: &Path) -> Result<()> {
-    let temp = crate::fsutil::TempPath::new(path)?;
+    let temp = crate::util::fsutil::TempPath::new(path)?;
     let file = File::create(temp.path())?;
     let synced = file.try_clone()?;
     let mut encoder = png::Encoder::new(BufWriter::new(file), EINK_COLORS.len() as u32, 1);

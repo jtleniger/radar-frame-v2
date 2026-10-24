@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
-use crate::constants::{RADAR_HEIGHT, WIDTH};
+use crate::config::constants::{RADAR_HEIGHT, WIDTH};
+use crate::config::paths::Paths;
+use crate::config::settings::Settings;
 use crate::error::Result;
-use crate::paths::Paths;
-use crate::settings::Settings;
 use crate::sources::Forecast;
 use crate::view::font::Fonts;
 use crate::view::forecast::Alert;

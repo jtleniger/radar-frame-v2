@@ -2,28 +2,18 @@
 //! artifacts, and the frame renderers.
 //!
 //! The image work lives in [`render`] (radar frame) and [`view`] (e-ink
-//! composition); this package is the process that used to be Flask plus
-//! `requests`, boto3, and the mode/state modules.
+//! composition); [`service`] owns the process lifecycle, [`http`] the wire
+//! contract, and [`config`] the settings and paths.
 
-pub mod api;
-pub mod backoff;
 pub mod cli;
-pub mod clock;
 pub mod config;
-pub mod constants;
-pub mod engine;
 pub mod error;
-pub mod frame;
-pub mod fsutil;
-pub mod logging;
-pub mod metrics;
-pub mod modes;
+pub mod http;
 pub mod nexrad;
-pub mod paths;
 pub mod render;
-pub mod settings;
-pub mod setup;
+pub mod service;
 pub mod sources;
-pub mod startup;
 pub mod state;
+pub mod telemetry;
+pub mod util;
 pub mod view;

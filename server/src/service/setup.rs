@@ -6,10 +6,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::config::constants::{RADAR_HEIGHT, WIDTH};
+use crate::config::paths::Paths;
 use crate::config::Config;
-use crate::constants::{RADAR_HEIGHT, WIDTH};
 use crate::error::{Error, Result};
-use crate::paths::Paths;
 use crate::render::pngio;
 use crate::sources::osm::{self, OsmFetcher};
 
@@ -81,7 +81,7 @@ fn read_stamp(path: &Path) -> Result<Option<String>> {
 }
 
 fn write_stamp(path: &Path, stamp: &str) -> Result<()> {
-    crate::fsutil::atomic_write(path, stamp.as_bytes()).map_err(|e| Error::io_path(path, &e))
+    crate::util::fsutil::atomic_write(path, stamp.as_bytes()).map_err(|e| Error::io_path(path, &e))
 }
 
 /// FNV-1a fingerprint of the OSM body. This is corruption detection, not
@@ -265,14 +265,15 @@ pub async fn create_streets(
 
     // The mask is validated; only now replace the OSM file and its stamps.
     if !adopt_local {
-        crate::fsutil::atomic_write(&osm, body.as_bytes()).map_err(|e| Error::io_path(&osm, &e))?;
+        crate::util::fsutil::atomic_write(&osm, body.as_bytes())
+            .map_err(|e| Error::io_path(&osm, &e))?;
         write_stamp(&paths.streets_osm_bbox(), &stamp)?;
     } else {
         if osm_stamp.is_none() {
             write_stamp(&paths.streets_osm_bbox(), &stamp)?;
         }
     }
-    crate::fsutil::atomic_write(
+    crate::util::fsutil::atomic_write(
         &paths.streets_osm_hash(),
         content_hash(body.as_bytes()).as_bytes(),
     )

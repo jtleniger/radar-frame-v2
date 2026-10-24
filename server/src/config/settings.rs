@@ -3,18 +3,18 @@
 //! The bbox and timezone were previously parsed separately by `AppState` and
 //! `Engine::new`, so a startup could validate one set of values while the
 //! renderer used another. [`Settings::from_config`] parses and validates the
-//! values exactly once; [`crate::startup::validate`] adds the artifact checks
+//! values exactly once; [`crate::service::startup::validate`] adds the artifact checks
 //! and returns the same value.
 
 use std::path::PathBuf;
 
 use chrono_tz::Tz;
 
+use crate::config::constants::{RADAR_HEIGHT, WIDTH};
 use crate::config::{Config, DEFAULT_USER_AGENT};
-use crate::constants::{RADAR_HEIGHT, WIDTH};
-use crate::engine::Bounds;
 use crate::error::{Error, Result};
 use crate::render::raster::Transform;
+use crate::service::engine::Bounds;
 
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -35,7 +35,7 @@ pub struct Settings {
 
 impl Settings {
     /// Parse and validate the settings `serve` needs. Artifacts are checked by
-    /// [`crate::startup::validate`], which owns this value.
+    /// [`crate::service::startup::validate`], which owns this value.
     pub fn from_config(config: &Config) -> Result<Self> {
         let nexrad_id = required(config, "radar", "nexrad_id")?;
         if nexrad_id.len() != 4 || !nexrad_id.chars().all(|c| c.is_ascii_alphanumeric()) {

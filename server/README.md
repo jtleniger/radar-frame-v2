@@ -28,17 +28,22 @@ server/
   static/style.css
   src/
     main.rs                thin: radar_frame::cli::main()
-    lib.rs
-    cli.rs                 clap structs and dispatch
-    api.rs clock.rs config.rs constants.rs engine.rs error.rs
-    logging.rs modes.rs paths.rs setup.rs state.rs
+    lib.rs                 module tree
+    error.rs               typed errors and HTTP mapping
+    cli/                   clap structs, dispatch, serve/render/view/setup
+    config/                config settings paths constants
+    http/                  router handlers pages status updater
+    service/               startup clock engine frame modes setup
+    state/                 schedule, mode selection, persistence
+    telemetry/             logging metrics
+    util/                  backoff fsutil
     sources/               mock nexrad nws online open_meteo osm
     nexrad/                archive2 bins elevations error geo
     render/                archive colors osm pngio raster render streets
     view/                  codes colors components error font forecast
                            icons image info palette views
   tests/
-    api.rs render.rs view.rs
+    api.rs modes.rs render.rs view.rs
     fixtures/
       api/, nexrad/, frame/, view/
 ```

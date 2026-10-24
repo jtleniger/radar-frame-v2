@@ -13,12 +13,12 @@ use chrono::{DateTime, Utc};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use radar_frame::api::{self, AppState};
-use radar_frame::clock::{Clock, FixedClock};
+use radar_frame::config::paths::Paths;
+use radar_frame::config::settings::Settings;
 use radar_frame::config::Config;
-use radar_frame::engine::{Engine, Renderer};
-use radar_frame::paths::Paths;
-use radar_frame::settings::Settings;
+use radar_frame::http::{self, AppState};
+use radar_frame::service::clock::{Clock, FixedClock};
+use radar_frame::service::engine::{Engine, Renderer};
 use radar_frame::sources::mock::MockProvider;
 use radar_frame::sources::nws;
 use radar_frame::sources::{
@@ -567,7 +567,7 @@ where
         radar,
         renderer,
     ));
-    (api::router(Arc::clone(&state)), state)
+    (http::router(Arc::clone(&state)), state)
 }
 
 async fn get(router: &Router, uri: &str) -> axum::response::Response {
@@ -1065,7 +1065,7 @@ async fn first_cycle_failure_returns_503() {
     assert_eq!(state.metrics.cycles_failed(), 1);
     assert_eq!(
         state.metrics.last_cycle().unwrap().outcome,
-        radar_frame::metrics::Outcome::Failed
+        radar_frame::telemetry::metrics::Outcome::Failed
     );
 }
 

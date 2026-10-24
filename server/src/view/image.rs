@@ -105,7 +105,7 @@ impl Image {
     }
 
     pub fn write_png(&self, path: &Path) -> Result<()> {
-        let temp = crate::fsutil::TempPath::new(path)?;
+        let temp = crate::util::fsutil::TempPath::new(path)?;
         let file = File::create(temp.path())?;
         let synced = file.try_clone()?;
         let writer = BufWriter::new(file);

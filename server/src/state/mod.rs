@@ -1,6 +1,10 @@
 //! Process state and the mode schedule, ported from `state/state.py`,
 //! `modes/mode.py`, and `modes/mode_select.py`.
 
+mod mode;
+
+pub use mode::{mode_for, Mode, ModeSelect, MODE_MIN_DWELL, MODE_SWITCH_SAMPLES};
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,83 +12,19 @@ use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
-use crate::backoff;
 use crate::error::Result;
-use crate::frame::PublishedFrame;
-use crate::fsutil;
+use crate::service::frame::PublishedFrame;
 use crate::sources::{Forecast, RadarStatus};
+use crate::util::{backoff, fsutil};
 use crate::view::forecast::Alert;
 
 /// How long a radar-status sample is reused. This is the interim single-flight
 /// cache until scheduling moves out of the request path.
 pub const STATUS_TTL: Duration = Duration::seconds(60);
 
-/// Consecutive radar-status samples that must agree before the mode switches.
-/// A station that alternates Operate/Standby on successive polls therefore
-/// cannot force a new render every minute.
-pub const MODE_SWITCH_SAMPLES: u32 = 3;
-
-/// The current mode is held for at least this long before a switch is
-/// accepted, even when the required samples already agree.
-pub const MODE_MIN_DWELL: Duration = Duration::minutes(5);
-
 /// On-disk schema version. A file from another version is ignored so a
 /// downgrade cannot adopt fields it does not understand.
 const STATE_VERSION: u32 = 1;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Mode {
-    Storm,
-    Clear,
-}
-
-impl Mode {
-    pub fn name(self) -> &'static str {
-        match self {
-            Mode::Storm => "Storm",
-            Mode::Clear => "Clear",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "Storm" => Some(Mode::Storm),
-            "Clear" => Some(Mode::Clear),
-            _ => None,
-        }
-    }
-
-    /// Storm every 10 minutes, clear every 30.
-    pub fn interval(self) -> Duration {
-        match self {
-            Mode::Storm => Duration::minutes(10),
-            Mode::Clear => Duration::minutes(30),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ModeSelect {
-    Auto,
-    Manual,
-}
-
-impl ModeSelect {
-    pub fn name(self) -> &'static str {
-        match self {
-            ModeSelect::Auto => "Auto",
-            ModeSelect::Manual => "Manual",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "Auto" => Some(ModeSelect::Auto),
-            "Manual" => Some(ModeSelect::Manual),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct State {
@@ -394,15 +334,6 @@ struct Persisted {
     radar_last_updated: DateTime<Utc>,
     #[serde(default)]
     radar_key: Option<String>,
-}
-
-/// The mode the station's status calls for.
-fn mode_for(status: RadarStatus) -> Mode {
-    if status.up && status.vcp != -1 && !status.clear_air_mode() {
-        Mode::Storm
-    } else {
-        Mode::Clear
-    }
 }
 
 fn local_string(time: DateTime<Utc>, timezone: Tz) -> Option<String> {
