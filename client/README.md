@@ -66,7 +66,9 @@ Flags:
 
 The display Pi runs Debian 11 (glibc 2.31). Do **not** copy a binary built
 against the build host's newer glibc: build a static musl binary instead. A
-static binary has no glibc dependency and runs on Debian 11 and later.
+static binary has no glibc dependency and runs on Debian 11 and later. If you
+need Avahi `.local` names, use the glibc 2.31 build described below instead;
+musl cannot load Avahi's NSS module.
 
 ### Cross-compile with cargo-zigbuild (recommended)
 
@@ -130,6 +132,7 @@ On the Pi, install and check NSS mDNS:
 
 ```sh
 sudo apt install libnss-mdns avahi-daemon
+sudo systemctl enable --now avahi-daemon
 grep '^hosts:' /etc/nsswitch.conf
 # hosts: files mdns4_minimal [NOTFOUND=return] dns
 getent hosts radar-frame.local
@@ -162,10 +165,18 @@ glibc. Use it for `--noop` smoke tests on the build host, not for deployment.
 Verify the deployed artifact:
 
 ```sh
+# Static musl build:
 file client/target/aarch64-unknown-linux-musl/release/radar-frame-client
 # ... statically linked ...
 ldd client/target/aarch64-unknown-linux-musl/release/radar-frame-client
 # not a dynamic executable
+
+# Avahi/glibc build:
+file client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client
+# ... dynamically linked, interpreter /lib/ld-linux-armhf.so.3 ...
+readelf -V client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client \
+  | grep -o 'GLIBC_[0-9.]*' | sort -V | tail
+# highest line must be GLIBC_2.31 or lower
 ```
 
 ## Install on the Pi
@@ -179,9 +190,13 @@ sudo raspi-config nonint do_spi 0
 sudo usermod -aG spi,gpio pi
 # Log out and back in so the group change applies.
 
-# From the build host:
-scp client/target/aarch64-unknown-linux-musl/release/radar-frame-client \
-  pi@radar-frame-client:/tmp/radar-frame-client
+# From the build host, choose the artifact you built:
+#   Avahi/glibc 2.31: client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client
+#   static musl:      client/target/arm-unknown-linux-musleabihf/release/radar-frame-client
+BINARY=client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client
+
+ssh pi@radar-frame-client 'mkdir -p ~/radar-frame-client/config'
+scp "$BINARY" pi@radar-frame-client:/tmp/radar-frame-client
 scp client/config/config.example.ini \
   pi@radar-frame-client:/home/pi/radar-frame-client/config/config.ini
 scp client/radar-frame-client.service \
