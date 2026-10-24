@@ -77,7 +77,10 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
 
     let mut radar_summary = None;
     if let Some(object) = latest {
-        if object.last_modified > state.radar_last_updated {
+        // A restarted process restores `radar_last_updated`, so the volume
+        // already on disk is not downloaded again. The file itself must still
+        // exist; a cleared data directory forces a fresh download.
+        if object.last_modified > state.radar_last_updated || !deps.paths.radar_raw().exists() {
             tracing::info!("downloading {}", object.key);
             let part = deps.paths.radar_part();
             let started = Instant::now();
@@ -108,6 +111,7 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
                                 Ok(()) => {
                                     cycle.volume_key = Some(object.key.clone());
                                     state.radar_last_updated = object.last_modified;
+                                    state.radar_key = Some(object.key.clone());
                                     radar_summary = Some(summary);
                                 }
                                 Err(error) => {
@@ -131,7 +135,12 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
             }
         } else {
             tracing::info!("using old radar data");
-            cycle.volume_key = Some(object.key);
+            cycle.volume_key = Some(
+                state
+                    .radar_key
+                    .clone()
+                    .unwrap_or_else(|| object.key.clone()),
+            );
         }
     }
 

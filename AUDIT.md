@@ -116,8 +116,8 @@ ID form: `<category>.<finding>.<action>`.
 | [x] | 3.1.1 | TTL-cache radar status with single-flight |
 | [x] | 3.2.1 | Backoff + jitter with `last_attempt`/`next_attempt` |
 | [x] | 3.2.2 | Per-source last-known-good cache |
-| [ ] | 3.3.1 | Mode hysteresis/minimum dwell |
-| [ ] | 3.4.1 | Persist state and radar key/mtime across restarts |
+| [x] | 3.3.1 | Mode hysteresis/minimum dwell |
+| [x] | 3.4.1 | Persist state and radar key/mtime across restarts |
 | [rejected] | ~~3.5.1~~ | ~~Localhost default; auth/rate limit public endpoints~~ |
 | [x] | 4.1.1 | Paginate S3 listing; handle MDM-only days |
 | [x] | 4.2.1 | Accept partial elevations; pick first available origin |

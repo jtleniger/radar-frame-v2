@@ -240,7 +240,15 @@ contract:
 - manual selection expires one day after it is chosen;
 - auto selection re-reads the NWS radar station on each `/frame` request and
   switches to Clear when the radar is down, the VCP is unknown, or the VCP is
-  clear-air (31/32/35).
+  clear-air (31/32/35). A switch needs three consecutive agreeing status
+  samples and a five-minute minimum dwell, so an alternating
+  Operate/Standby station cannot force a render on every poll. The first
+  sample after startup establishes the mode immediately.
+
+The mode selection, schedule, and radar volume key/mtime are persisted in
+`data/state.json` (written atomically). A restart resumes the same schedule
+and manual selection, and reuses the volume already in `data/` instead of
+downloading it again. A missing or unreadable state file starts fresh.
 
 Network use:
 
