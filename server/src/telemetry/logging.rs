@@ -16,10 +16,10 @@ const MAX_BYTES: u64 = 100_000;
 const BACKUPS: usize = 4;
 
 pub struct RotatingWriter {
-    inner: Arc<Mutex<Inner>>,
+    state: Arc<Mutex<WriterState>>,
 }
 
-struct Inner {
+struct WriterState {
     path: PathBuf,
     file: File,
     length: u64,
@@ -36,7 +36,7 @@ impl RotatingWriter {
         let file = open(&path)?;
         let length = file.metadata()?.len();
         Ok(RotatingWriter {
-            inner: Arc::new(Mutex::new(Inner {
+            state: Arc::new(Mutex::new(WriterState {
                 path,
                 file,
                 length,
@@ -51,8 +51,8 @@ impl RotatingWriter {
         // Report outside the lock: a tracing call while holding the writer
         // mutex would recurse into this writer and deadlock.
         let warning = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.append(buffer)?
+            let mut state = self.state.lock().unwrap();
+            state.append(buffer)?
         };
         if let Some(warning) = warning {
             eprintln!("radar-frame: {warning}");
@@ -61,7 +61,7 @@ impl RotatingWriter {
     }
 
     fn flush(&self) -> io::Result<()> {
-        self.inner.lock().unwrap().file.flush()
+        self.state.lock().unwrap().file.flush()
     }
 }
 
@@ -69,7 +69,7 @@ fn open(path: &std::path::Path) -> io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
 
-impl Inner {
+impl WriterState {
     /// Append one buffer, rotating first when the current file is full.
     ///
     /// A failed rotation is reported instead of silently ignored; the write
@@ -236,13 +236,13 @@ mod tests {
         std::fs::create_dir(dir.path().join("radar-frame.log.1")).unwrap();
 
         {
-            let mut inner = writer.inner.lock().unwrap();
-            assert!(inner.append(b"0123456789abcdef").unwrap().is_none());
+            let mut state = writer.state.lock().unwrap();
+            assert!(state.append(b"0123456789abcdef").unwrap().is_none());
         }
 
         let warning = {
-            let mut inner = writer.inner.lock().unwrap();
-            inner.append(b"overflow").unwrap()
+            let mut state = writer.state.lock().unwrap();
+            state.append(b"overflow").unwrap()
         };
 
         assert!(
@@ -257,10 +257,10 @@ mod tests {
             "a failed rotation must not truncate the log"
         );
 
-        let inner = writer.inner.lock().unwrap();
-        assert_eq!(inner.length, 24);
+        let state = writer.state.lock().unwrap();
+        assert_eq!(state.length, 24);
         assert!(
-            inner.retry_at > inner.max_bytes,
+            state.retry_at > state.max_bytes,
             "the next rotation attempt must wait for another window"
         );
     }

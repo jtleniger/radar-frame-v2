@@ -14,14 +14,14 @@ use crate::render::pngio;
 use crate::sources::osm::{self, OsmFetcher};
 
 pub fn create_data_dir(paths: &Paths) -> Result<()> {
-    let data = paths.data_dir();
-    if data.is_dir() {
-        tracing::info!("{} exists", data.display());
+    let data_dir = paths.data_dir();
+    if data_dir.is_dir() {
+        tracing::info!("{} exists", data_dir.display());
         return Ok(());
     }
 
-    tracing::info!("{} missing, creating it", data.display());
-    fs::create_dir(&data).map_err(|e| Error::io_path(&data, &e))
+    tracing::info!("{} missing, creating it", data_dir.display());
+    fs::create_dir(&data_dir).map_err(|e| Error::io_path(&data_dir, &e))
 }
 
 /// Write and remove a probe file in `data/`. Used by readiness and the

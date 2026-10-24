@@ -9,11 +9,11 @@ use chrono::{DateTime, Utc};
 use radar_frame::config::paths::Paths;
 use radar_frame::config::settings::Settings;
 use radar_frame::config::Config;
-use radar_frame::service::engine::{Engine, Renderer};
-use radar_frame::service::modes::{self, Deps};
+use radar_frame::service::modes::{self, Services};
+use radar_frame::service::renderer::{FrameRenderer, Renderer};
 use radar_frame::sources::mock::MockProvider;
 use radar_frame::sources::{
-    AlertSource, Forecast, ForecastSource, Object, RadarSource, RadarStatus, RadarStatusSource,
+    AlertSource, Forecast, ForecastSource, RadarObject, RadarSource, RadarStatus, RadarStatusSource,
 };
 use radar_frame::state::{Mode, State};
 use radar_frame::view::forecast::Alert;
@@ -92,13 +92,13 @@ impl RadarSource for NoRadar {
         &self,
         _nexrad_id: &str,
         _now: DateTime<Utc>,
-    ) -> radar_frame::error::Result<Option<Object>> {
+    ) -> radar_frame::error::Result<Option<RadarObject>> {
         Ok(None)
     }
 
     async fn download(
         &self,
-        _object: &Object,
+        _object: &RadarObject,
         _destination: &std::path::Path,
     ) -> radar_frame::error::Result<u64> {
         unreachable!("clear mode does not download radar data")
@@ -106,7 +106,7 @@ impl RadarSource for NoRadar {
 }
 
 struct BytesRadar {
-    object: Object,
+    radar_object: RadarObject,
     bytes: Vec<u8>,
 }
 
@@ -116,13 +116,13 @@ impl RadarSource for BytesRadar {
         &self,
         _nexrad_id: &str,
         _now: DateTime<Utc>,
-    ) -> radar_frame::error::Result<Option<Object>> {
-        Ok(Some(self.object.clone()))
+    ) -> radar_frame::error::Result<Option<RadarObject>> {
+        Ok(Some(self.radar_object.clone()))
     }
 
     async fn download(
         &self,
-        _object: &Object,
+        _object: &RadarObject,
         destination: &std::path::Path,
     ) -> radar_frame::error::Result<u64> {
         std::fs::write(destination, &self.bytes)?;
@@ -170,10 +170,10 @@ async fn rejected_volume_keeps_the_last_good_pair() {
     std::fs::write(paths.radar_raw(), b"old-volume").unwrap();
     std::fs::write(paths.radar_img(), b"old-frame").unwrap();
 
-    let engine: Arc<dyn Renderer> = Arc::new(FailingRenderer);
+    let renderer: Arc<dyn Renderer> = Arc::new(FailingRenderer);
     let provider = MockProvider::new();
     let radar = BytesRadar {
-        object: Object {
+        radar_object: RadarObject {
             key: "2026/10/21/KTLX/KTLX20261021_153000_V06".into(),
             last_modified: now(),
         },
@@ -183,17 +183,19 @@ async fn rejected_volume_keeps_the_last_good_pair() {
     let mut state = State::new();
     let settings = Settings::from_config(&config).unwrap();
 
-    let deps = Deps {
+    let services = Services {
         paths: &paths,
         settings: &settings,
-        engine: &engine,
+        renderer: &renderer,
         forecast: &provider,
         alerts: &provider,
         radar: &radar,
         metrics: &metrics,
         now: now(),
     };
-    assert!(modes::run(Mode::Storm, &deps, &mut state).await.is_err());
+    assert!(modes::run(Mode::Storm, &services, &mut state)
+        .await
+        .is_err());
 
     assert_eq!(state.radar_last_updated, DateTime::UNIX_EPOCH);
     assert_eq!(std::fs::read(paths.radar_raw()).unwrap(), b"old-volume");
@@ -211,7 +213,7 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
     write_eink_png(&paths.palette_img()).unwrap();
 
     let settings = Settings::from_config(&config).unwrap();
-    let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &settings));
+    let renderer: Arc<dyn Renderer> = Arc::new(FrameRenderer::new(paths.clone(), &settings));
     let provider = CountingProvider::new();
     let radar = NoRadar;
     let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
@@ -219,17 +221,19 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
 
     let mut frames = Vec::new();
     for _ in 0..2 {
-        let deps = Deps {
+        let services = Services {
             paths: &paths,
             settings: &settings,
-            engine: &engine,
+            renderer: &renderer,
             forecast: &provider,
             alerts: &provider,
             radar: &radar,
             metrics: &metrics,
             now: now(),
         };
-        modes::run(Mode::Clear, &deps, &mut state).await.unwrap();
+        modes::run(Mode::Clear, &services, &mut state)
+            .await
+            .unwrap();
         frames.push(std::fs::read(paths.output_img()).unwrap());
     }
 
@@ -252,13 +256,13 @@ impl RadarSource for ListingFails {
         &self,
         _nexrad_id: &str,
         _now: DateTime<Utc>,
-    ) -> radar_frame::error::Result<Option<Object>> {
+    ) -> radar_frame::error::Result<Option<RadarObject>> {
         Err(radar_frame::error::Error::new("listing failed"))
     }
 
     async fn download(
         &self,
-        _object: &Object,
+        _object: &RadarObject,
         _destination: &std::path::Path,
     ) -> radar_frame::error::Result<u64> {
         unreachable!("the listing already failed")
@@ -273,8 +277,8 @@ impl RadarSource for DownloadFails {
         &self,
         _nexrad_id: &str,
         _now: DateTime<Utc>,
-    ) -> radar_frame::error::Result<Option<Object>> {
-        Ok(Some(Object {
+    ) -> radar_frame::error::Result<Option<RadarObject>> {
+        Ok(Some(RadarObject {
             key: "2026/10/21/KTLX/KTLX20261021_153000_V06".into(),
             last_modified: now(),
         }))
@@ -282,7 +286,7 @@ impl RadarSource for DownloadFails {
 
     async fn download(
         &self,
-        _object: &Object,
+        _object: &RadarObject,
         _destination: &std::path::Path,
     ) -> radar_frame::error::Result<u64> {
         Err(radar_frame::error::Error::new("download failed"))
@@ -335,15 +339,15 @@ async fn storm_with_failing_radar(radar: &dyn RadarSource) -> modes::Cycle {
     std::fs::write(paths.radar_raw(), b"old-volume").unwrap();
 
     let config = Config::parse(CONFIG).unwrap();
-    let engine: Arc<dyn Renderer> = Arc::new(RecordingRenderer);
+    let renderer: Arc<dyn Renderer> = Arc::new(RecordingRenderer);
     let provider = MockProvider::new();
     let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
     let mut state = State::new();
     let settings = Settings::from_config(&config).unwrap();
-    let deps = Deps {
+    let services = Services {
         paths: &paths,
         settings: &settings,
-        engine: &engine,
+        renderer: &renderer,
         forecast: &provider,
         alerts: &provider,
         radar,
@@ -351,7 +355,9 @@ async fn storm_with_failing_radar(radar: &dyn RadarSource) -> modes::Cycle {
         now: now(),
     };
 
-    let cycle = modes::run(Mode::Storm, &deps, &mut state).await.unwrap();
+    let cycle = modes::run(Mode::Storm, &services, &mut state)
+        .await
+        .unwrap();
 
     assert_eq!(std::fs::read(paths.radar_raw()).unwrap(), b"old-volume");
     assert_eq!(state.radar_last_updated, DateTime::UNIX_EPOCH);

@@ -105,8 +105,8 @@ impl Image {
     }
 
     pub fn write_png(&self, path: &Path) -> Result<()> {
-        let temp = crate::util::fsutil::TempPath::new(path)?;
-        let file = File::create(temp.path())?;
+        let temp_path = crate::util::fsutil::TempPath::new(path)?;
+        let file = File::create(temp_path.path())?;
         let synced = file.try_clone()?;
         let writer = BufWriter::new(file);
         let mut encoder = png::Encoder::new(writer, self.width, self.height);
@@ -121,7 +121,7 @@ impl Image {
         writer.write_image_data(&rgb)?;
         writer.finish()?;
         synced.sync_all()?;
-        temp.commit()?;
+        temp_path.commit()?;
         Ok(())
     }
 

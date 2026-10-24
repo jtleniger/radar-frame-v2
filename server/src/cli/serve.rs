@@ -8,7 +8,7 @@ use clap::Args;
 use crate::error::Result;
 use crate::http;
 use crate::service::clock::SystemClock;
-use crate::service::engine::{Engine, Renderer};
+use crate::service::renderer::{FrameRenderer, Renderer};
 use crate::service::setup;
 use crate::sources::nexrad::S3Radar;
 use crate::sources::osm::Overpass;
@@ -65,14 +65,14 @@ pub async fn serve(args: Serve) -> Result<()> {
     });
 
     let radar: Arc<dyn RadarSource> = Arc::new(S3Radar::new(client.clone()));
-    let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &settings));
+    let renderer: Arc<dyn Renderer> = Arc::new(FrameRenderer::new(paths.clone(), &settings));
     let state = Arc::new(http::AppState::new(
         settings,
         paths,
         Arc::new(SystemClock),
         sources(&config, &client, args.mock),
         radar,
-        engine,
+        renderer,
     ));
 
     http::serve(state, args.bind).await

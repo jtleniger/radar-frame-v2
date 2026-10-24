@@ -1,4 +1,4 @@
-//! End-to-end tests for `radar-frame check`, all offline through the mocks.
+//! End-to-end tests for `radar-frame demo`, all offline through the mocks.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -56,7 +56,7 @@ fn stderr(output: &Output) -> String {
 #[test]
 fn warnings_mock_lists_the_sample_alerts() {
     let (_dir, root) = fixture();
-    let output = run(&root, &["check", "warnings", "--mock"]);
+    let output = run(&root, &["demo", "warnings", "--mock"]);
     assert!(output.status.success(), "{}", stderr(&output));
 
     let stdout = stdout(&output);
@@ -68,7 +68,7 @@ fn warnings_mock_lists_the_sample_alerts() {
 #[test]
 fn clear_mock_renders_a_frame_with_alerts() {
     let (_dir, root) = fixture();
-    let output = run(&root, &["check", "clear", "--mock"]);
+    let output = run(&root, &["demo", "clear", "--mock"]);
     assert!(output.status.success(), "{}", stderr(&output));
 
     let stdout = stdout(&output);

@@ -1,7 +1,7 @@
 //! Command-line parsing and dispatch. Each command group lives in its own
 //! module; this file owns the shared setup helpers and the entry point.
 
-mod check;
+mod demo;
 mod render;
 mod serve;
 mod view;
@@ -32,9 +32,9 @@ enum Command {
     Serve(serve::Serve),
     /// Create the data directory, palette, and street mask
     Setup(Setup),
-    /// Check a live or mocked data path end to end
+    /// Exercise a live or mocked data path end to end
     #[command(subcommand)]
-    Check(check::CheckCommand),
+    Demo(demo::DemoCommand),
     /// Low-level rendering and fixture tools
     #[command(subcommand)]
     Render(render::RenderCommand),
@@ -98,7 +98,7 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Serve(args) => serve::serve(args).await,
         Command::Setup(args) => setup_command(args).await,
-        Command::Check(command) => check::run(command).await,
+        Command::Demo(command) => demo::run(command).await,
         Command::Render(command) => render::run(command).await,
         Command::View(command) => view::run(command),
     }

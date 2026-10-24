@@ -19,8 +19,8 @@ use crate::config::Paths;
 use crate::config::Settings;
 use crate::error::{Error, Result};
 use crate::service::clock::Clock;
-use crate::service::engine::Renderer;
 use crate::service::frame::PublishedFrame;
+use crate::service::renderer::Renderer;
 use crate::sources::{RadarSource, Sources};
 use crate::state::{Mode, ModeSelect, State};
 use crate::telemetry::metrics::Metrics;
@@ -45,7 +45,7 @@ pub struct AppState {
     pub clock: Arc<dyn Clock>,
     pub sources: Sources,
     pub radar: Arc<dyn RadarSource>,
-    pub engine: Arc<dyn Renderer>,
+    pub renderer: Arc<dyn Renderer>,
     pub metrics: Arc<Metrics>,
     snapshot: watch::Receiver<Arc<Snapshot>>,
     commands: mpsc::UnboundedSender<Command>,
@@ -62,7 +62,7 @@ impl AppState {
         clock: Arc<dyn Clock>,
         sources: Sources,
         radar: Arc<dyn RadarSource>,
-        engine: Arc<dyn Renderer>,
+        renderer: Arc<dyn Renderer>,
     ) -> Self {
         let started_at = clock.now();
 
@@ -85,7 +85,7 @@ impl AppState {
             clock: Arc::clone(&clock),
             sources: sources.clone(),
             radar: Arc::clone(&radar),
-            engine: Arc::clone(&engine),
+            renderer: Arc::clone(&renderer),
             metrics: Arc::clone(&metrics),
             state,
             snapshots,
@@ -98,7 +98,7 @@ impl AppState {
             clock,
             sources,
             radar,
-            engine,
+            renderer,
             metrics,
             snapshot,
             commands,

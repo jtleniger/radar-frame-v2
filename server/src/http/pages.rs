@@ -232,7 +232,7 @@ fn service_group(status: &Status, timezone: Tz) -> Group {
     let started = timestamp(status.started_at, timezone)
         .map(|time| format!("Since {time}"))
         .unwrap_or_default();
-    let data = if status.data_writable {
+    let writable = if status.data_writable {
         "Writable"
     } else {
         "Read-only"
@@ -244,7 +244,7 @@ fn service_group(status: &Status, timezone: Tz) -> Group {
             stat("Uptime", uptime, started, ""),
             stat(
                 "Data directory",
-                data,
+                writable,
                 "Frame output location",
                 if status.data_writable { "ok" } else { "error" },
             ),

@@ -8,7 +8,7 @@ use clap::{Args, Subcommand};
 use crate::config::Settings;
 use crate::error::Result;
 use crate::service::clock::{Clock, SystemClock};
-use crate::service::engine::{Engine, Renderer};
+use crate::service::renderer::{FrameRenderer, Renderer};
 use crate::service::setup;
 use crate::sources::osm::Overpass;
 
@@ -129,18 +129,18 @@ async fn render_volume(args: RenderVolume) -> Result<()> {
     }
 
     let settings = Settings::from_config(&config)?;
-    let engine = Arc::new(Engine::new(paths.clone(), &settings));
+    let renderer = Arc::new(FrameRenderer::new(paths.clone(), &settings));
     let volume = args.file.clone();
     let radar_output = paths.radar_img();
-    let radar_engine = Arc::clone(&engine);
+    let radar_renderer = Arc::clone(&renderer);
     tokio::task::spawn_blocking(move || {
-        radar_engine.render_radar(&volume, args.minimum, &radar_output)
+        radar_renderer.render_radar(&volume, args.minimum, &radar_output)
     })
     .await
     .map_err(|e| crate::error::Error::render(format!("render task: {e}")))??;
 
     let now = SystemClock.now();
-    tokio::task::spawn_blocking(move || engine.render_storm(&[], now))
+    tokio::task::spawn_blocking(move || renderer.render_storm(&[], now))
         .await
         .map_err(|e| crate::error::Error::render(format!("render task: {e}")))??;
 

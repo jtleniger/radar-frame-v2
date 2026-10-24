@@ -9,9 +9,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::config::{Paths, Settings};
 use crate::error::{Error, Result};
 use crate::service::clock::Clock;
-use crate::service::engine::Renderer;
 use crate::service::frame::PublishedFrame;
-use crate::service::modes::{self, Deps};
+use crate::service::modes::{self, Services};
+use crate::service::renderer::Renderer;
 use crate::sources::{RadarSource, Sources};
 use crate::state::{Mode, ModeSelect, State, STATUS_TTL};
 use crate::telemetry::metrics::{elapsed_ms, Metrics, Outcome};
@@ -53,7 +53,7 @@ pub struct Updater {
     pub(super) clock: Arc<dyn Clock>,
     pub(super) sources: Sources,
     pub(super) radar: Arc<dyn RadarSource>,
-    pub(super) engine: Arc<dyn Renderer>,
+    pub(super) renderer: Arc<dyn Renderer>,
     pub(super) metrics: Arc<Metrics>,
     pub(super) state: State,
     pub(super) snapshots: watch::Sender<Arc<Snapshot>>,
@@ -139,10 +139,10 @@ impl Updater {
 
     async fn run_cycle(&mut self, now: DateTime<Utc>) -> Update {
         let mode = self.state.mode;
-        let deps = Deps {
+        let services = Services {
             paths: &self.paths,
             settings: &self.settings,
-            engine: &self.engine,
+            renderer: &self.renderer,
             forecast: self.sources.forecast.as_ref(),
             alerts: self.sources.alerts.as_ref(),
             radar: self.radar.as_ref(),
@@ -151,16 +151,18 @@ impl Updater {
         };
 
         let cycle_started = Instant::now();
-        let cycle =
-            match tokio::time::timeout(CYCLE_DEADLINE, modes::run(mode, &deps, &mut self.state))
-                .await
-            {
-                Ok(result) => result,
-                Err(_) => Err(Error::new(format!(
-                    "cycle exceeded the {} s deadline",
-                    CYCLE_DEADLINE.as_secs()
-                ))),
-            };
+        let cycle = match tokio::time::timeout(
+            CYCLE_DEADLINE,
+            modes::run(mode, &services, &mut self.state),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(Error::new(format!(
+                "cycle exceeded the {} s deadline",
+                CYCLE_DEADLINE.as_secs()
+            ))),
+        };
         let cycle = match cycle {
             Ok(cycle) => cycle,
             Err(error) => return self.fail(now, mode, cycle_started, error),

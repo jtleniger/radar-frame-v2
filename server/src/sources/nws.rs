@@ -73,11 +73,11 @@ pub async fn radar_status(client: &reqwest::Client, config: &Config) -> Result<R
 }
 
 pub fn parse_alerts(body: &str) -> Result<Vec<Alert>> {
-    let data: AlertsResponse = serde_json::from_str(body)?;
-    let mut alerts = Vec::with_capacity(data.features.len());
+    let response: AlertsResponse = serde_json::from_str(body)?;
+    let mut alerts = Vec::with_capacity(response.features.len());
 
     // One malformed feature must not discard the alerts around it.
-    for feature in data.features {
+    for feature in response.features {
         let parsed = serde_json::from_value::<Feature>(feature)
             .map_err(Error::from)
             .and_then(|feature| alert(&feature.properties));
@@ -157,7 +157,7 @@ pub fn parse_radar_status(body: &str) -> Result<RadarStatus> {
         .and_then(|properties| properties.rda)
         .and_then(|rda| rda.properties)
     else {
-        // A station without RDA data cannot be reporting precipitation, so
+        // A station without RDA response cannot be reporting precipitation, so
         // treat it as down and let the mode fall back to Clear.
         tracing::warn!("nws station response has no rda properties; treating radar as down");
         return Ok(RadarStatus { up: false, vcp: -1 });

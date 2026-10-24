@@ -25,7 +25,7 @@ pub struct Bounds {
 }
 
 /// Rendering is a trait so the HTTP layer can be tested without a full
-/// three-elevation volume; production always uses [`Engine`].
+/// three-elevation volume; production always uses [`FrameRenderer`].
 pub trait Renderer: Send + Sync {
     fn render_radar(
         &self,
@@ -38,7 +38,9 @@ pub trait Renderer: Send + Sync {
         -> Result<()>;
 }
 
-pub struct Engine {
+/// Composes the radar, street, forecast, and alert layers into published
+/// e-ink frames using the local palette and fonts.
+pub struct FrameRenderer {
     paths: Paths,
     bounds: Bounds,
     timezone: Tz,
@@ -46,9 +48,9 @@ pub struct Engine {
     fonts: Fonts,
 }
 
-impl Engine {
+impl FrameRenderer {
     pub fn new(paths: Paths, settings: &Settings) -> Self {
-        Engine {
+        FrameRenderer {
             paths,
             bounds: settings.bounds,
             timezone: settings.timezone,
@@ -58,7 +60,7 @@ impl Engine {
     }
 }
 
-impl Renderer for Engine {
+impl Renderer for FrameRenderer {
     /// Rasterize the local Archive II volume to `output`.
     /// `components/radar/render.py` ran `frame-render frame` for this.
     fn render_radar(

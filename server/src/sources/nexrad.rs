@@ -13,7 +13,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use tokio::io::AsyncWriteExt;
 
-use super::{Object, RadarSource};
+use super::{RadarObject, RadarSource};
 use crate::error::{Error, Result};
 use crate::nexrad::archive2::MAX_VOLUME_BYTES;
 
@@ -114,16 +114,16 @@ impl S3Radar {
     }
 
     /// Every page of a prefix's listing, following `NextContinuationToken`.
-    async fn day_objects(&self, prefix: &str) -> Result<Vec<Object>> {
-        let mut objects = Vec::new();
+    async fn day_objects(&self, prefix: &str) -> Result<Vec<RadarObject>> {
+        let mut radar_objects = Vec::new();
         let mut token = None;
 
         for _ in 0..MAX_LIST_PAGES {
             let page = self.list(prefix, token.as_deref()).await?;
-            objects.extend(page.objects);
+            radar_objects.extend(page.radar_objects);
 
             if !page.truncated {
-                return Ok(objects);
+                return Ok(radar_objects);
             }
             token = Some(page.next_token.ok_or_else(|| {
                 Error::parse(format!(
@@ -139,10 +139,10 @@ impl S3Radar {
 
     /// Listing entries that carry real volume data. `_MDM` objects are
     /// metadata-only placeholders and cannot be rendered.
-    async fn volumes(&self, prefix: &str) -> Result<Vec<Object>> {
-        let mut objects = self.day_objects(prefix).await?;
-        objects.retain(|object| !object.key.ends_with("_MDM"));
-        Ok(objects)
+    async fn volumes(&self, prefix: &str) -> Result<Vec<RadarObject>> {
+        let mut radar_objects = self.day_objects(prefix).await?;
+        radar_objects.retain(|radar_object| !radar_object.key.ends_with("_MDM"));
+        Ok(radar_objects)
     }
 
     async fn get_to(&self, key: &str, destination: &Path, max_bytes: u64) -> Result<u64> {
@@ -290,30 +290,30 @@ fn elapsed_ms(started: Instant) -> u64 {
 
 #[async_trait]
 impl RadarSource for S3Radar {
-    async fn latest(&self, nexrad_id: &str, now: DateTime<Utc>) -> Result<Option<Object>> {
+    async fn latest(&self, nexrad_id: &str, now: DateTime<Utc>) -> Result<Option<RadarObject>> {
         let mut prefix = format!("{}/{}", day_prefix(now), nexrad_id);
-        let mut objects = self.volumes(&prefix).await?;
+        let mut radar_objects = self.volumes(&prefix).await?;
 
-        if objects.is_empty() {
+        if radar_objects.is_empty() {
             // Midnight UTC can leave today with no searchable volumes yet,
             // and an MDM-only day has nothing to render; either way, use the
             // previous day's last volume.
             let yesterday = now - Duration::days(1);
             prefix = format!("{}/{}", day_prefix(yesterday), nexrad_id);
-            objects = self.volumes(&prefix).await?;
+            radar_objects = self.volumes(&prefix).await?;
         }
 
-        if objects.is_empty() {
+        if radar_objects.is_empty() {
             tracing::error!("no volumes found for prefix {prefix}");
             return Ok(None);
         }
 
-        objects.sort_by_key(|object| std::cmp::Reverse(object.last_modified));
-        Ok(objects.into_iter().next())
+        radar_objects.sort_by_key(|radar_object| std::cmp::Reverse(radar_object.last_modified));
+        Ok(radar_objects.into_iter().next())
     }
 
-    async fn download(&self, object: &Object, destination: &Path) -> Result<u64> {
-        self.get_to(&object.key, destination, MAX_VOLUME_BYTES)
+    async fn download(&self, radar_object: &RadarObject, destination: &Path) -> Result<u64> {
+        self.get_to(&radar_object.key, destination, MAX_VOLUME_BYTES)
             .await
     }
 }
@@ -321,7 +321,7 @@ impl RadarSource for S3Radar {
 /// One ListObjectsV2 page: its objects and whether another page follows.
 #[derive(Debug, Default)]
 pub struct Listing {
-    pub objects: Vec<Object>,
+    pub radar_objects: Vec<RadarObject>,
     pub truncated: bool,
     pub next_token: Option<String>,
 }
@@ -333,7 +333,7 @@ pub fn parse_list(body: &str) -> Result<Listing> {
     let mut reader = Reader::from_str(body);
     reader.config_mut().trim_text(true);
 
-    let mut objects = Vec::new();
+    let mut radar_objects = Vec::new();
     let mut inside_contents = false;
     let mut tag: Vec<u8> = Vec::new();
     let mut key: Option<String> = None;
@@ -362,7 +362,7 @@ pub fn parse_list(body: &str) -> Result<Listing> {
                                 Error::parse(format!("s3 LastModified {last_modified}: {e}"))
                             })?
                             .with_timezone(&Utc);
-                        objects.push(Object {
+                        radar_objects.push(RadarObject {
                             key,
                             last_modified: time,
                         });
@@ -394,7 +394,7 @@ pub fn parse_list(body: &str) -> Result<Listing> {
     }
 
     Ok(Listing {
-        objects,
+        radar_objects,
         truncated,
         next_token,
     })
@@ -430,15 +430,15 @@ mod tests {
     #[test]
     fn parses_contents_and_times() {
         let listing = parse_list(LIST).unwrap();
-        assert_eq!(listing.objects.len(), 3);
+        assert_eq!(listing.radar_objects.len(), 3);
         assert!(!listing.truncated);
         assert_eq!(listing.next_token, None);
         assert_eq!(
-            listing.objects[2].key,
+            listing.radar_objects[2].key,
             "2026/10/21/KTLX/KTLX20261021_153500_V06"
         );
         assert_eq!(
-            listing.objects[2].last_modified.to_string(),
+            listing.radar_objects[2].last_modified.to_string(),
             "2026-10-21 15:35:00 UTC"
         );
     }
@@ -455,7 +455,7 @@ mod tests {
         .unwrap();
         assert!(listing.truncated);
         assert_eq!(listing.next_token.as_deref(), Some("1/abc+def="));
-        assert_eq!(listing.objects.len(), 1);
+        assert_eq!(listing.radar_objects.len(), 1);
     }
 
     #[test]
@@ -463,7 +463,7 @@ mod tests {
         let listing =
             parse_list("<ListBucketResult><Contents><Key>k</Key></Contents></ListBucketResult>")
                 .unwrap();
-        assert!(listing.objects.is_empty());
+        assert!(listing.radar_objects.is_empty());
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
         use axum::routing::get;
 
         let app = axum::Router::new().route(
-            "/object",
+            "/radar_object",
             get(move || async move { axum::body::Body::from(body) }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -486,7 +486,7 @@ mod tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        format!("http://{address}/object")
+        format!("http://{address}/radar_object")
     }
 
     /// Serve S3 listings from `handler`, recording each query string.
@@ -501,14 +501,14 @@ mod tests {
         let app = axum::Router::new().route(
             "/",
             get(
-                move |axum::extract::Query(params): axum::extract::Query<
+                move |axum::extract::Query(query): axum::extract::Query<
                     HashMap<String, String>,
                 >| {
                     let recorded = Arc::clone(&recorded);
                     let handler = Arc::clone(&handler);
                     async move {
-                        recorded.lock().unwrap().push(params.clone());
-                        handler(params)
+                        recorded.lock().unwrap().push(query.clone());
+                        handler(query)
                     }
                 },
             ),
@@ -546,8 +546,8 @@ mod tests {
 
     #[tokio::test]
     async fn follows_continuation_tokens_to_the_newest_volume() {
-        let (base, requests) = serve_listing(|params| {
-            if params.get("continuation-token").map(String::as_str) == Some("page-2") {
+        let (base, requests) = serve_listing(|query| {
+            if query.get("continuation-token").map(String::as_str) == Some("page-2") {
                 PAGE_TWO
             } else {
                 PAGE_ONE
@@ -585,8 +585,8 @@ mod tests {
   </Contents>
 </ListBucketResult>"#;
 
-        let (base, requests) = serve_listing(|params| {
-            if params["prefix"].starts_with("2026/10/20") {
+        let (base, requests) = serve_listing(|query| {
+            if query["prefix"].starts_with("2026/10/20") {
                 YESTERDAY
             } else {
                 TODAY_MDM

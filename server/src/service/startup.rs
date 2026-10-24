@@ -29,17 +29,17 @@ pub fn validate(config: &Config, paths: &Paths) -> Result<Settings> {
 }
 
 fn validate_data_dir(paths: &Paths) -> Result<()> {
-    let data = paths.data_dir();
-    if !data.is_dir() {
+    let data_dir = paths.data_dir();
+    if !data_dir.is_dir() {
         return Err(Error::config(format!(
             "startup: data directory {} does not exist; create it or run `radar-frame setup`",
-            data.display()
+            data_dir.display()
         )));
     }
     if !setup::data_writable(paths) {
         return Err(Error::config(format!(
             "startup: data directory {} is not writable",
-            data.display()
+            data_dir.display()
         )));
     }
     Ok(())
