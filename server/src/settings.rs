@@ -39,7 +39,7 @@ impl Settings {
     pub fn from_config(config: &Config) -> Result<Self> {
         let nexrad_id = required(config, "radar", "nexrad_id")?;
         if nexrad_id.len() != 4 || !nexrad_id.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(Error::new(format!(
+            return Err(Error::config(format!(
                 "config: [radar] nexrad_id must be four letters or digits, got {nexrad_id:?}"
             )));
         }
@@ -53,7 +53,7 @@ impl Settings {
         let fire_zone = required(config, "nws", "fire_zone")?;
         let user_agent = config.user_agent().trim();
         if user_agent.is_empty() || user_agent == DEFAULT_USER_AGENT {
-            return Err(Error::new(
+            return Err(Error::config(
                 "config: [nws] user_agent must identify a contact; the NWS API requires one",
             ));
         }
@@ -76,7 +76,7 @@ impl Settings {
 fn required(config: &Config, section: &str, key: &str) -> Result<String> {
     let value = config.get(section, key)?;
     if value.trim().is_empty() {
-        return Err(Error::new(format!(
+        return Err(Error::config(format!(
             "config: [{section}] {key} must not be empty"
         )));
     }
@@ -87,12 +87,12 @@ fn required(config: &Config, section: &str, key: &str) -> Result<String> {
 fn coordinate(config: &Config, section: &str, key: &str, limit: f64) -> Result<f64> {
     let value = config.f64(section, key)?;
     if !value.is_finite() {
-        return Err(Error::new(format!(
+        return Err(Error::config(format!(
             "config: [{section}] {key} must be finite, got {value}"
         )));
     }
     if value.abs() > limit {
-        return Err(Error::new(format!(
+        return Err(Error::config(format!(
             "config: [{section}] {key} must be within +/-{limit}, got {value}"
         )));
     }
@@ -108,7 +108,7 @@ fn bounds(config: &Config) -> Result<Bounds> {
     // The renderer's own validation, so a bbox that would fail later fails
     // here with the same explanation.
     Transform::new(min_lon, min_lat, max_lon, max_lat, WIDTH, RADAR_HEIGHT)
-        .map_err(|error| Error::new(format!("config: [bbox]: {error}")))?;
+        .map_err(|error| Error::config(format!("config: [bbox]: {error}")))?;
 
     Ok(Bounds {
         min_lon,

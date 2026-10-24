@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use reqwest::header::ACCEPT;
+use reqwest::header::{HeaderMap, ACCEPT, RETRY_AFTER};
 use reqwest::Url;
 
 use crate::error::{Error, Result};
@@ -41,10 +41,11 @@ pub async fn get(client: &reqwest::Client, url: Url, accept: &str, source: &str)
                 error_kind = "transport",
                 "upstream request failed"
             );
-            Error(format!("{url}: {error}"))
+            Error::http(format!("{url}: {error}"))
         })?;
 
     let status = response.status();
+    let retry_after = retry_after(response.headers());
     let elapsed = elapsed_ms(started);
 
     if !status.is_success() {
@@ -58,7 +59,11 @@ pub async fn get(client: &reqwest::Client, url: Url, accept: &str, source: &str)
             error_kind = "status",
             "upstream request failed"
         );
-        return Err(Error(format!("{url}: {status}: {body}")));
+        return Err(Error::http_status(
+            status.as_u16(),
+            retry_after,
+            format!("{url}: {status}: {body}"),
+        ));
     }
 
     let body = match body(response).await {
@@ -73,7 +78,7 @@ pub async fn get(client: &reqwest::Client, url: Url, accept: &str, source: &str)
                 error_kind = "body",
                 "upstream response rejected"
             );
-            return Err(Error(format!("{url}: {error}")));
+            return Err(Error::http(format!("{url}: {error}")));
         }
     };
 
@@ -93,13 +98,21 @@ fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// `Retry-After` in seconds. HTTP-date values are ignored; the mapping then
+/// omits the header instead of guessing a delay.
+pub fn retry_after(headers: &HeaderMap) -> Option<u64> {
+    headers.get(RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()
+}
+
 /// Read a successful body, refusing anything above [`MAX_BODY_BYTES`].
 async fn body(mut response: reqwest::Response) -> Result<String> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         let size = body.len().saturating_add(chunk.len());
         if size > MAX_BODY_BYTES {
-            return Err(Error(format!("response exceeds {MAX_BODY_BYTES} bytes")));
+            return Err(Error::http(format!(
+                "response exceeds {MAX_BODY_BYTES} bytes"
+            )));
         }
         body.extend_from_slice(&chunk);
     }

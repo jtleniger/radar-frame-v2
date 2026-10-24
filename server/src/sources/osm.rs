@@ -46,9 +46,14 @@ impl OsmFetcher for Overpass {
             .await?;
 
         let status = response.status();
+        let retry_after = super::http::retry_after(response.headers());
         let body = response.text().await?;
         if !status.is_success() {
-            return Err(Error(format!("{URL}: {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                retry_after,
+                format!("{URL}: {status}: {body}"),
+            ));
         }
 
         Ok(body)

@@ -21,7 +21,7 @@ pub fn create_data_dir(paths: &Paths) -> Result<()> {
     }
 
     tracing::info!("{} missing, creating it", data.display());
-    fs::create_dir(&data).map_err(|e| Error(format!("{}: {e}", data.display())))
+    fs::create_dir(&data).map_err(|e| Error::io_path(&data, &e))
 }
 
 /// Write and remove a probe file in `data/`. Used by readiness and the
@@ -76,13 +76,12 @@ fn read_stamp(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(stamp) => Ok(Some(stamp)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(Error(format!("{}: {error}", path.display()))),
+        Err(error) => Err(Error::io_path(path, &error)),
     }
 }
 
 fn write_stamp(path: &Path, stamp: &str) -> Result<()> {
-    crate::fsutil::atomic_write(path, stamp.as_bytes())
-        .map_err(|e| Error(format!("{}: {e}", path.display())))
+    crate::fsutil::atomic_write(path, stamp.as_bytes()).map_err(|e| Error::io_path(path, &e))
 }
 
 /// FNV-1a fingerprint of the OSM body. This is corruption detection, not
@@ -108,7 +107,7 @@ fn validate_osm(xml: &str) -> Result<()> {
 fn validate_mask(path: &Path) -> Result<()> {
     let mask = pngio::read_gray8(path)?;
     if (mask.width, mask.height) != (WIDTH, RADAR_HEIGHT) {
-        return Err(Error(format!(
+        return Err(Error::render(format!(
             "{}: street mask is {}x{}, expected {WIDTH}x{RADAR_HEIGHT}",
             path.display(),
             mask.width,
@@ -241,7 +240,7 @@ pub async fn create_streets(
                 osm.display()
             );
         }
-        local_osm.ok_or_else(|| Error(format!("{}: unreadable OSM file", osm.display())))?
+        local_osm.ok_or_else(|| Error::parse(format!("{}: unreadable OSM file", osm.display())))?
     } else {
         tracing::info!(
             "{} missing or generated for a different [bbox], downloading",
@@ -266,8 +265,7 @@ pub async fn create_streets(
 
     // The mask is validated; only now replace the OSM file and its stamps.
     if !adopt_local {
-        crate::fsutil::atomic_write(&osm, body.as_bytes())
-            .map_err(|e| Error(format!("{}: {e}", osm.display())))?;
+        crate::fsutil::atomic_write(&osm, body.as_bytes()).map_err(|e| Error::io_path(&osm, &e))?;
         write_stamp(&paths.streets_osm_bbox(), &stamp)?;
     } else {
         if osm_stamp.is_none() {
@@ -278,11 +276,11 @@ pub async fn create_streets(
         &paths.streets_osm_hash(),
         content_hash(body.as_bytes()).as_bytes(),
     )
-    .map_err(|e| Error(format!("{}: {e}", paths.streets_osm_hash().display())))?;
+    .map_err(|e| Error::io_path(&paths.streets_osm_hash(), &e))?;
 
     fs::rename(&part, &mask).map_err(|error| {
         let _ = fs::remove_file(&part);
-        Error(format!("{}: {error}", mask.display()))
+        Error::io_path(&mask, &error)
     })?;
     write_stamp(&paths.streets_bbox(), &stamp)?;
     Ok(())
@@ -357,7 +355,7 @@ pub async fn retry_streets(
             Err(error) => {
                 failures += 1;
                 if policy.max_attempts.is_some_and(|max| failures >= max) {
-                    return Err(Error(format!(
+                    return Err(Error::new(format!(
                         "street overlay unavailable after {failures} attempts: {error}"
                     )));
                 }
@@ -421,7 +419,7 @@ max_lon = -97.21
         async fn fetch(&self, _query: &str) -> Result<String> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if call <= self.failures_before_success {
-                Err(Error::new("overpass unavailable"))
+                Err(Error::http("overpass unavailable"))
             } else {
                 Ok(self.body.clone())
             }

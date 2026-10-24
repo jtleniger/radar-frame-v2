@@ -24,9 +24,8 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        Self::parse(&text).map_err(|e| Error(format!("{}: {e}", path.display())))
+        let text = std::fs::read_to_string(path).map_err(|e| Error::io_path(path, &e))?;
+        Self::parse(&text).map_err(|e| Error::config(format!("{}: {e}", path.display())))
     }
 
     pub fn parse(text: &str) -> Result<Self> {
@@ -40,29 +39,31 @@ impl Config {
             }
 
             if let Some(name) = line.strip_prefix('[') {
-                let name = name
-                    .strip_suffix(']')
-                    .ok_or_else(|| Error(format!("line {}: unterminated section", number + 1)))?;
+                let name = name.strip_suffix(']').ok_or_else(|| {
+                    Error::config(format!("line {}: unterminated section", number + 1))
+                })?;
                 let name = name.trim().to_string();
                 sections.entry(name.clone()).or_default();
                 current = Some(name);
                 continue;
             }
 
-            let separator = line
-                .find('=')
-                .or_else(|| line.find(':'))
-                .ok_or_else(|| Error(format!("line {}: expected key = value", number + 1)))?;
+            let separator = line.find('=').or_else(|| line.find(':')).ok_or_else(|| {
+                Error::config(format!("line {}: expected key = value", number + 1))
+            })?;
             let key = line[..separator].trim().to_lowercase();
             let value = line[separator + 1..].trim().to_string();
 
             if key.is_empty() {
-                return Err(Error(format!("line {}: empty option name", number + 1)));
+                return Err(Error::config(format!(
+                    "line {}: empty option name",
+                    number + 1
+                )));
             }
 
-            let section = current
-                .as_ref()
-                .ok_or_else(|| Error(format!("line {}: option outside a section", number + 1)))?;
+            let section = current.as_ref().ok_or_else(|| {
+                Error::config(format!("line {}: option outside a section", number + 1))
+            })?;
             sections
                 .entry(section.clone())
                 .or_default()
@@ -74,7 +75,7 @@ impl Config {
 
     pub fn get(&self, section: &str, key: &str) -> Result<&str> {
         self.get_opt(section, key)
-            .ok_or_else(|| Error(format!("config: missing [{section}] {key}")))
+            .ok_or_else(|| Error::config(format!("config: missing [{section}] {key}")))
     }
 
     pub fn get_opt(&self, section: &str, key: &str) -> Option<&str> {
@@ -87,7 +88,7 @@ impl Config {
     pub fn f64(&self, section: &str, key: &str) -> Result<f64> {
         let value = self.get(section, key)?;
         value.parse().map_err(|_| {
-            Error(format!(
+            Error::config(format!(
                 "config: [{section}] {key} is not a number: {value}"
             ))
         })
@@ -96,7 +97,7 @@ impl Config {
     pub fn timezone(&self, section: &str, key: &str) -> Result<Tz> {
         let value = self.get(section, key)?;
         value.parse().map_err(|_| {
-            Error(format!(
+            Error::config(format!(
                 "config: [{section}] {key} is not a time zone: {value}"
             ))
         })

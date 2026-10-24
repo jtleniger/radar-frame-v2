@@ -67,6 +67,7 @@ impl S3Radar {
         };
 
         let status = response.status();
+        let retry_after = super::http::retry_after(response.headers());
         let body = match response.text().await {
             Ok(body) => body,
             Err(error) => {
@@ -93,7 +94,11 @@ impl S3Radar {
                 error_kind = "status",
                 "upstream request failed"
             );
-            return Err(Error(format!("s3 list {prefix}: {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                retry_after,
+                format!("s3 list {prefix}: {status}: {body}"),
+            ));
         }
 
         tracing::info!(
@@ -121,13 +126,13 @@ impl S3Radar {
                 return Ok(objects);
             }
             token = Some(page.next_token.ok_or_else(|| {
-                Error(format!(
+                Error::parse(format!(
                     "s3 list {prefix}: truncated without a continuation token"
                 ))
             })?);
         }
 
-        Err(Error(format!(
+        Err(Error::parse(format!(
             "s3 list {prefix}: more than {MAX_LIST_PAGES} pages"
         )))
     }
@@ -166,6 +171,7 @@ impl S3Radar {
         };
 
         let status = response.status();
+        let retry_after = super::http::retry_after(response.headers());
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             tracing::warn!(
@@ -177,7 +183,11 @@ impl S3Radar {
                 error_kind = "status",
                 "upstream request failed"
             );
-            return Err(Error(format!("{url}: {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                retry_after,
+                format!("{url}: {status}: {body}"),
+            ));
         }
 
         if let Some(length) = response.content_length() {
@@ -191,7 +201,7 @@ impl S3Radar {
                     error_kind = "size",
                     "upstream response rejected"
                 );
-                return Err(Error(format!(
+                return Err(Error::http(format!(
                     "{url}: Content-Length {length} exceeds the {max_bytes}-byte limit"
                 )));
             }
@@ -199,7 +209,7 @@ impl S3Radar {
 
         let mut file = tokio::fs::File::create(destination)
             .await
-            .map_err(|error| Error(format!("{}: {error}", destination.display())))?;
+            .map_err(|error| Error::io_path(destination, &error))?;
         let mut written = 0u64;
 
         loop {
@@ -236,7 +246,7 @@ impl S3Radar {
                         error_kind = "size",
                         "upstream response rejected"
                     );
-                    return Err(Error(format!(
+                    return Err(Error::http(format!(
                         "{url}: response exceeds the {max_bytes}-byte limit"
                     )));
                 }
@@ -245,16 +255,16 @@ impl S3Radar {
             if let Err(error) = file.write_all(&chunk).await {
                 drop(file);
                 let _ = tokio::fs::remove_file(destination).await;
-                return Err(Error(format!("{}: {error}", destination.display())));
+                return Err(Error::io_path(destination, &error));
             }
         }
 
         file.flush()
             .await
-            .map_err(|error| Error(format!("{}: {error}", destination.display())))?;
+            .map_err(|error| Error::io_path(destination, &error))?;
         file.sync_all()
             .await
-            .map_err(|error| Error(format!("{}: {error}", destination.display())))?;
+            .map_err(|error| Error::io_path(destination, &error))?;
         drop(file);
 
         tracing::info!(
@@ -348,7 +358,9 @@ pub fn parse_list(body: &str) -> Result<Listing> {
                 if name == b"Contents" {
                     if let (Some(key), Some(last_modified)) = (key.take(), last_modified.take()) {
                         let time = DateTime::parse_from_rfc3339(&last_modified)
-                            .map_err(|e| Error(format!("s3 LastModified {last_modified}: {e}")))?
+                            .map_err(|e| {
+                                Error::parse(format!("s3 LastModified {last_modified}: {e}"))
+                            })?
                             .with_timezone(&Utc);
                         objects.push(Object {
                             key,
@@ -362,7 +374,7 @@ pub fn parse_list(body: &str) -> Result<Listing> {
             Ok(Event::Text(event)) => {
                 let text = event
                     .unescape()
-                    .map_err(|e| Error(format!("s3 list xml: {e}")))?
+                    .map_err(|e| Error::parse(format!("s3 list xml: {e}")))?
                     .into_owned();
                 if inside_contents && tag == b"Key" {
                     key = Some(text);
@@ -376,7 +388,7 @@ pub fn parse_list(body: &str) -> Result<Listing> {
             }
             Ok(Event::Eof) => break,
             Ok(_) => {}
-            Err(e) => return Err(Error(format!("s3 list xml: {e}"))),
+            Err(e) => return Err(Error::parse(format!("s3 list xml: {e}"))),
         }
         buffer.clear();
     }
