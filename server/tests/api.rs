@@ -101,8 +101,8 @@ struct TestProvider {
 
 #[async_trait]
 impl ForecastProvider for TestProvider {
-    async fn forecast(&self) -> radar_frame::error::Result<&Forecast> {
-        Ok(&self.forecast)
+    async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
+        Ok(self.forecast.clone())
     }
 
     async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
@@ -139,7 +139,7 @@ impl Renderer for TestRenderer {
     fn render_clear(
         &self,
         forecast: &Forecast,
-        alerts: Vec<radar_frame::view::forecast::Alert>,
+        alerts: &[radar_frame::view::forecast::Alert],
         now: DateTime<Utc>,
     ) -> radar_frame::error::Result<()> {
         self.engine.render_clear(forecast, alerts, now)

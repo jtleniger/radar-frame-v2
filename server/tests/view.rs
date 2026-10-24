@@ -194,7 +194,15 @@ fn clear_frame_matches_the_pillow_renderer() {
     let input: ClearInput =
         serde_json::from_str(&std::fs::read_to_string(fixture("forecast.json")).unwrap()).unwrap();
 
-    let actual = render_clear(&fonts, &input, now(), Chicago, &palette()).unwrap();
+    let actual = render_clear(
+        &fonts,
+        &input.forecast,
+        &input.alerts,
+        now(),
+        Chicago,
+        &palette(),
+    )
+    .unwrap();
     let expected = Image::from_png(&fixture("clear.expected.png")).unwrap();
 
     assert_eq!((actual.width, actual.height), (800, 480));

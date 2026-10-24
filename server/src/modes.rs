@@ -65,12 +65,12 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<()> {
 }
 
 async fn clear(deps: &Deps<'_>) -> Result<()> {
-    let forecast = (*deps.provider.forecast().await?).clone();
+    let forecast = deps.provider.forecast().await?;
     let alerts = deps.provider.alerts().await?;
     let now = deps.now;
 
     render(Arc::clone(deps.engine), move |engine| {
-        engine.render_clear(&forecast, alerts, now)
+        engine.render_clear(&forecast, &alerts, now)
     })
     .await
 }

@@ -125,11 +125,11 @@ ID form: `<category>.<finding>.<action>`.
 | [ ] | 4.3.2 | Fixed-point rounding instead of `format!`/`parse` |
 | [ ] | 4.3.3 | Burn max directly into the composite |
 | [ ] | 4.3.4 | Borrow moment slices |
-| [ ] | 5.1.1 | Remove process-lifetime forecast cache |
-| [ ] | 5.1.2 | Two-cycle forecast refresh test |
+| [x] | 5.1.1 | Remove process-lifetime forecast cache |
+| [x] | 5.1.2 | Two-cycle forecast refresh test |
 | [ ] | 5.2.1 | Split provider traits/snapshot |
-| [ ] | 5.3.1 | Remove forecast/`ClearInput` clones |
-| [ ] | 5.4.1 | Cap bodies, gzip, `Accept`, upstream logging |
+| [x] | 5.3.1 | Remove forecast/`ClearInput` clones |
+| [x] | 5.4.1 | Cap bodies, gzip, `Accept`, upstream logging |
 | [ ] | 6.1.1 | Cache palette and icons |
 | [ ] | 6.2.1 | Publish in-memory frame bytes + ETag |
 | [ ] | 6.3.1 | Collapse `Renderer`/single `Settings` |

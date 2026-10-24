@@ -1,6 +1,8 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
 
+use crate::sources::Forecast;
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct CurrentConditions {
     pub temp_f: f64,
@@ -50,11 +52,12 @@ impl Alert {
     }
 }
 
+/// JSON input for `view clear` and the view fixtures. The panels come from
+/// [`Forecast`]; alerts travel alongside it.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClearInput {
-    pub current: CurrentConditions,
-    pub hourly: Vec<ForecastHour>,
-    pub daily: Vec<ForecastDay>,
+    #[serde(flatten)]
+    pub forecast: Forecast,
     #[serde(default)]
     pub alerts: Vec<Alert>,
 }

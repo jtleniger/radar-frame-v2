@@ -215,6 +215,7 @@ fn init_logging(paths: &Paths, config: &Config) {
 fn http_client(config: &Config) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(config.user_agent())
+        .gzip(true)
         .timeout(Duration::from_secs(30))
         .build()?)
 }
@@ -302,12 +303,12 @@ async fn render_clear(args: MockArgs) -> Result<()> {
 
     let client = http_client(&config)?;
     let provider = provider(&config, &client, args.mock);
-    let forecast = provider.forecast().await?.clone();
+    let forecast = provider.forecast().await?;
     let alerts = provider.alerts().await?;
 
     let engine = Engine::new(paths, &config)?;
     let now = SystemClock.now();
-    tokio::task::spawn_blocking(move || engine.render_clear(&forecast, alerts, now))
+    tokio::task::spawn_blocking(move || engine.render_clear(&forecast, &alerts, now))
         .await
         .map_err(|e| crate::error::Error::new(format!("render task: {e}")))??;
 
@@ -417,7 +418,8 @@ fn view_clear(args: ClearArgs) -> Result<()> {
     let palette = crate::view::palette::Palette::from_png(&args.frame.palette)?;
     let image = crate::view::views::render_clear(
         &crate::view::font::Fonts::new(),
-        &input,
+        &input.forecast,
+        &input.alerts,
         now(args.frame.now)?,
         timezone(&args.frame.timezone)?,
         &palette,

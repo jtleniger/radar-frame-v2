@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
+use crate::sources::Forecast;
 use crate::view::colors::{BLACK, WHITE};
 use crate::view::components::{
     current_conditions, daily_forecast, hourly_forecast, HEIGHT, HEIGHT_LESS_INFO, INFO_HEIGHT,
@@ -8,7 +9,7 @@ use crate::view::components::{
 };
 use crate::view::error::Result;
 use crate::view::font::Fonts;
-use crate::view::forecast::{Alert, ClearInput};
+use crate::view::forecast::Alert;
 use crate::view::image::Image;
 use crate::view::info;
 use crate::view::palette::Palette;
@@ -36,23 +37,24 @@ pub fn render_storm(
 /// bar. The forecast panels are mapped to the palette without dithering.
 pub fn render_clear(
     fonts: &Fonts,
-    input: &ClearInput,
+    forecast: &Forecast,
+    alerts: &[Alert],
     now: DateTime<Utc>,
     timezone: Tz,
     palette: &Palette,
 ) -> Result<Image> {
     let mut image = Image::new(WIDTH, HEIGHT, WHITE);
 
-    let current = current_conditions(fonts, &input.current)?;
+    let current = current_conditions(fonts, &forecast.current)?;
     image.paste(&current, 0, 0);
 
-    let hourly = hourly_forecast(fonts, &input.hourly)?;
+    let hourly = hourly_forecast(fonts, &forecast.hourly)?;
     image.paste(&hourly, WIDTH_1_3 as i64, 0);
 
-    let daily = daily_forecast(fonts, &input.daily)?;
+    let daily = daily_forecast(fonts, &forecast.daily)?;
     image.paste(&daily, (2 * WIDTH_1_3) as i64, 0);
 
-    let bar = info::render(fonts, &input.alerts, now, timezone);
+    let bar = info::render(fonts, alerts, now, timezone);
     image.paste(&bar, 0, HEIGHT_LESS_INFO as i64);
 
     image.vertical_line(WIDTH_1_3 as i64, 20, HEIGHT_LESS_INFO as i64 - 20, 2, BLACK);
