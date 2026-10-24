@@ -96,10 +96,10 @@ ID form: `<category>.<finding>.<action>`.
 |:---:|---|---|
 | [x] | 1.1.1 | Render base frame first; publish degraded frame on alert failure |
 | [x] | 1.1.2 | Serve last good frame on upstream errors; `503` only if none; keep last mode |
-| [ ] | 1.2.1 | Stream S3 GET to `.part` with a byte cap |
-| [ ] | 1.2.2 | Cap decompression; reject oversized LDM records; checked arithmetic |
-| [ ] | 1.3.1 | Temp file + `rename` for all artifacts |
-| [ ] | 1.3.2 | Validate before replacing last-good volume/frame; retain last-good pair |
+| [x] | 1.2.1 | Stream S3 GET to `.part` with a byte cap |
+| [x] | 1.2.2 | Cap decompression; reject oversized LDM records; checked arithmetic |
+| [x] | 1.3.1 | Temp file + `rename` for all artifacts |
+| [x] | 1.3.2 | Validate before replacing last-good volume/frame; retain last-good pair |
 | [ ] | 1.4.1 | Make streets optional at startup; background retry with backoff |
 | [ ] | 1.4.2 | Validate OSM/mask before writing OSM file and stamps |
 | [ ] | 1.5.1 | Skip malformed alerts with a warning |

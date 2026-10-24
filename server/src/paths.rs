@@ -53,6 +53,18 @@ impl Paths {
         self.data_dir().join("nexrad-latest.png")
     }
 
+    /// Staging path for a downloaded volume; only renamed to [`Self::radar_raw`]
+    /// after the volume has been parsed and rendered.
+    pub fn radar_part(&self) -> PathBuf {
+        self.data_dir().join("nexrad-latest.ar2.part")
+    }
+
+    /// Staging path for the radar frame rendered from [`Self::radar_part`];
+    /// committed together with the volume.
+    pub fn radar_img_part(&self) -> PathBuf {
+        self.data_dir().join("nexrad-latest.png.part")
+    }
+
     pub fn radar_raw(&self) -> PathBuf {
         self.data_dir().join("nexrad-latest.ar2")
     }

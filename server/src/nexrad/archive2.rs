@@ -12,6 +12,13 @@ const MESSAGE_HEADER_LEN: usize = 28;
 const LEGACY_MESSAGE_SLOT_LEN: usize = 2432;
 /// Message 31 header length, including the data block count.
 const MESSAGE31_HEADER_LEN: usize = 32;
+/// Upper bound on a downloaded Archive II object. Real volumes are far below
+/// this; the cap keeps a corrupt `Content-Length` from filling the disk.
+pub const MAX_VOLUME_BYTES: u64 = 256 * 1024 * 1024;
+/// Upper bound on a decompressed volume or LDM record. Wrapping decoders in a
+/// limit stops a decompression bomb from exhausting memory.
+const MAX_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
+const MAX_LDM_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct Volume {
     pub scans: BTreeMap<u8, Vec<Radial>>,
@@ -117,7 +124,10 @@ impl Moment {
             )));
         }
 
-        let expected = self.gates as usize * self.word_size as usize / 8;
+        let expected = (self.gates as usize)
+            .checked_mul(self.word_size as usize)
+            .ok_or_else(|| Error::Format("moment data length overflow".to_string()))?
+            / 8;
         if self.data.len() != expected {
             return Err(Error::Format(format!(
                 "moment data length {} does not match {} gates of {} bits",
@@ -147,21 +157,45 @@ impl Moment {
 }
 
 pub fn read_volume(path: &Path) -> Result<Volume> {
+    let size = std::fs::metadata(path)
+        .map_err(|err| Error::Format(format!("{}: {err}", path.display())))?
+        .len();
+    if size > MAX_VOLUME_BYTES {
+        return Err(Error::Format(format!(
+            "{}: {size} bytes exceeds the {MAX_VOLUME_BYTES}-byte volume limit",
+            path.display()
+        )));
+    }
+
     let bytes =
         std::fs::read(path).map_err(|err| Error::Format(format!("{}: {err}", path.display())))?;
     parse_volume(&bytes)
 }
 
 pub fn parse_volume(bytes: &[u8]) -> Result<Volume> {
+    parse_volume_capped(bytes, MAX_DECOMPRESSED_BYTES, MAX_LDM_RECORD_BYTES)
+}
+
+fn parse_volume_capped(bytes: &[u8], max_decompressed: usize, max_record: usize) -> Result<Volume> {
     let decompressed;
     let data: &[u8] = if bytes.starts_with(&[0x1f, 0x8b]) {
-        let mut out = Vec::new();
-        flate2::read::GzDecoder::new(bytes).read_to_end(&mut out)?;
+        let out = read_capped(
+            flate2::read::GzDecoder::new(bytes),
+            max_decompressed,
+            "decompressed volume",
+        )?;
         decompressed = out;
         &decompressed
     } else {
         bytes
     };
+
+    if data.len() > max_decompressed {
+        return Err(Error::Format(format!(
+            "volume of {} bytes exceeds the {max_decompressed}-byte limit",
+            data.len()
+        )));
+    }
 
     if data.len() < VOLUME_HEADER_LEN {
         return Err(Error::Format(format!(
@@ -175,7 +209,7 @@ pub fn parse_volume(bytes: &[u8]) -> Result<Volume> {
     };
     let mut pos = VOLUME_HEADER_LEN;
 
-    while pos + 4 <= data.len() {
+    while data.len().saturating_sub(pos) >= 4 {
         let size = read_i32_at(data, pos, "LDM record size")?;
         let size_start = pos;
         pos += 4;
@@ -188,17 +222,27 @@ pub fn parse_volume(bytes: &[u8]) -> Result<Volume> {
         }
 
         let length = size.unsigned_abs() as usize;
-        let record = data.get(pos..pos + length).ok_or_else(|| {
+        if length > max_record {
+            return Err(Error::Format(format!(
+                "LDM record at byte {size_start} is {length} bytes, above the {max_record}-byte limit"
+            )));
+        }
+        let end = pos
+            .checked_add(length)
+            .ok_or_else(|| Error::Format(format!("LDM record at byte {size_start} overflows")))?;
+        let record = data.get(pos..end).ok_or_else(|| {
             Error::Format(format!(
                 "LDM record at byte {size_start} exceeds file length"
             ))
         })?;
-        pos += length;
+        pos = end;
 
         if record.starts_with(b"BZh") {
-            let mut decoder = bzip2::read::MultiBzDecoder::new(record);
-            let mut out = Vec::new();
-            decoder.read_to_end(&mut out)?;
+            let out = read_capped(
+                bzip2::read::MultiBzDecoder::new(record),
+                max_decompressed,
+                "decompressed LDM record",
+            )?;
             parse_messages(&mut volume, &out)?;
         } else {
             parse_messages(&mut volume, record)?;
@@ -208,22 +252,44 @@ pub fn parse_volume(bytes: &[u8]) -> Result<Volume> {
     Ok(volume)
 }
 
+/// Read at most `limit` bytes, refusing a stream that expands past it.
+fn read_capped<R: Read>(reader: R, limit: usize, what: &str) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(Error::Io)?;
+    if out.len() > limit {
+        return Err(Error::Format(format!(
+            "{what} exceeds the {limit}-byte limit"
+        )));
+    }
+    Ok(out)
+}
+
 fn parse_messages(volume: &mut Volume, data: &[u8]) -> Result<()> {
     let mut start = 0;
 
-    while data.len() - start >= MESSAGE_HEADER_LEN {
+    while data.len().saturating_sub(start) >= MESSAGE_HEADER_LEN {
         let message_type = data[start + 15];
 
         if message_type != 31 {
             if data.len() - start < LEGACY_MESSAGE_SLOT_LEN {
                 break;
             }
-            start += LEGACY_MESSAGE_SLOT_LEN;
+            start = start
+                .checked_add(LEGACY_MESSAGE_SLOT_LEN)
+                .ok_or_else(|| Error::Format("message offset overflow".to_string()))?;
             continue;
         }
 
-        let body_start = start + MESSAGE_HEADER_LEN;
-        if body_start + MESSAGE31_HEADER_LEN > data.len() {
+        let body_start = start
+            .checked_add(MESSAGE_HEADER_LEN)
+            .ok_or_else(|| Error::Format("message offset overflow".to_string()))?;
+        let header_end = body_start
+            .checked_add(MESSAGE31_HEADER_LEN)
+            .ok_or_else(|| Error::Format("message offset overflow".to_string()))?;
+        if header_end > data.len() {
             return Err(Error::Format(format!(
                 "message 31 header at byte {body_start} truncated"
             )));
@@ -244,7 +310,9 @@ fn parse_messages(volume: &mut Volume, data: &[u8]) -> Result<()> {
             )));
         }
 
-        let end = body_start + radial_length;
+        let end = body_start
+            .checked_add(radial_length)
+            .ok_or_else(|| Error::Format("message offset overflow".to_string()))?;
         if end > data.len() {
             return Err(Error::Format(format!(
                 "message 31 radial at byte {start} exceeds record length"
@@ -271,8 +339,13 @@ fn parse_radial(body: &[u8]) -> Result<Radial> {
     let data_block_count = read_u16_at(body, 30, "message 31 data block count")? as usize;
 
     let pointer_start = MESSAGE31_HEADER_LEN;
-    let pointer_bytes = data_block_count * 4;
-    if pointer_start + pointer_bytes > body.len() {
+    let pointer_bytes = data_block_count
+        .checked_mul(4)
+        .ok_or_else(|| Error::Format("data block pointer count overflow".to_string()))?;
+    let pointer_end = pointer_start
+        .checked_add(pointer_bytes)
+        .ok_or_else(|| Error::Format("data block pointer offset overflow".to_string()))?;
+    if pointer_end > body.len() {
         return Err(Error::Format(format!(
             "message 31 data block pointers exceed radial length {}",
             body.len()
@@ -290,9 +363,9 @@ fn parse_radial(body: &[u8]) -> Result<Radial> {
 
     // Newer RDA builds add block pointers past the count, terminated by the
     // start of the VOL block ("RVOL"). Zero pointers are padding.
-    let mut probe = pointer_start + pointer_bytes;
+    let mut probe = pointer_end;
     let mut extra = 0;
-    while extra < 20 && probe + 4 <= body.len() {
+    while extra < 20 && body.len().saturating_sub(probe) >= 4 {
         if &body[probe..probe + 4] == b"RVOL" {
             break;
         }
@@ -314,7 +387,13 @@ fn parse_radial(body: &[u8]) -> Result<Radial> {
 
     for pointer in pointers {
         let offset = pointer as usize;
-        let name = body.get(offset + 1..offset + 4).ok_or_else(|| {
+        let name_start = offset
+            .checked_add(1)
+            .ok_or_else(|| Error::Format("data block offset overflow".to_string()))?;
+        let name_end = offset
+            .checked_add(4)
+            .ok_or_else(|| Error::Format("data block offset overflow".to_string()))?;
+        let name = body.get(name_start..name_end).ok_or_else(|| {
             Error::Format(format!(
                 "data block pointer {offset} exceeds radial length {}",
                 body.len()
@@ -323,9 +402,15 @@ fn parse_radial(body: &[u8]) -> Result<Radial> {
 
         match name {
             b"VOL" => {
+                let lat_offset = offset
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Format("VOL offset overflow".to_string()))?;
+                let lon_offset = offset
+                    .checked_add(12)
+                    .ok_or_else(|| Error::Format("VOL offset overflow".to_string()))?;
                 volume = Some(VolumeBlock {
-                    lat: read_f32_at(body, offset + 8, "VOL latitude")?,
-                    lon: read_f32_at(body, offset + 12, "VOL longitude")?,
+                    lat: read_f32_at(body, lat_offset, "VOL latitude")?,
+                    lon: read_f32_at(body, lon_offset, "VOL longitude")?,
                 });
             }
             b"REF" => moments.reflectivity = Some(parse_moment(body, offset)?),
@@ -353,21 +438,33 @@ fn parse_radial(body: &[u8]) -> Result<Radial> {
 }
 
 fn parse_moment(body: &[u8], offset: usize) -> Result<Moment> {
-    let gates = read_u16_at(body, offset + 8, "moment gate count")?;
-    let range_m = read_u16_at(body, offset + 10, "moment range")?;
-    let interval_m = read_u16_at(body, offset + 12, "moment sample interval")?;
-    let word_size = *body.get(offset + 19).ok_or_else(|| {
+    let at = |delta: usize| {
+        offset
+            .checked_add(delta)
+            .ok_or_else(|| Error::Format("moment offset overflow".to_string()))
+    };
+
+    let gates = read_u16_at(body, at(8)?, "moment gate count")?;
+    let range_m = read_u16_at(body, at(10)?, "moment range")?;
+    let interval_m = read_u16_at(body, at(12)?, "moment sample interval")?;
+    let word_size = *body.get(at(19)?).ok_or_else(|| {
         Error::Format(format!(
             "moment at byte {offset} truncated before word size"
         ))
     })?;
-    let scale = read_f32_at(body, offset + 20, "moment scale")?;
-    let offset_value = read_f32_at(body, offset + 24, "moment offset")?;
+    let scale = read_f32_at(body, at(20)?, "moment scale")?;
+    let offset_value = read_f32_at(body, at(24)?, "moment offset")?;
 
-    let data_start = offset + 28;
-    let data_len = gates as usize * word_size as usize / 8;
+    let data_start = at(28)?;
+    let data_len = (gates as usize)
+        .checked_mul(word_size as usize)
+        .ok_or_else(|| Error::Format("moment data length overflow".to_string()))?
+        / 8;
+    let data_end = data_start
+        .checked_add(data_len)
+        .ok_or_else(|| Error::Format("moment data offset overflow".to_string()))?;
     let data = body
-        .get(data_start..data_start + data_len)
+        .get(data_start..data_end)
         .ok_or_else(|| {
             Error::Format(format!(
                 "moment data at byte {data_start} of length {data_len} exceeds radial length {}",
@@ -388,15 +485,21 @@ fn parse_moment(body: &[u8], offset: usize) -> Result<Moment> {
 }
 
 fn read_u16_at(data: &[u8], offset: usize, what: &str) -> Result<u16> {
+    let end = offset
+        .checked_add(2)
+        .ok_or_else(|| Error::Format(format!("{what} offset overflow")))?;
     let bytes = data
-        .get(offset..offset + 2)
+        .get(offset..end)
         .ok_or_else(|| Error::Format(format!("{what} at byte {offset} truncated")))?;
     Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
 }
 
 fn read_u32_at(data: &[u8], offset: usize, what: &str) -> Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| Error::Format(format!("{what} offset overflow")))?;
     let bytes = data
-        .get(offset..offset + 4)
+        .get(offset..end)
         .ok_or_else(|| Error::Format(format!("{what} at byte {offset} truncated")))?;
     Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
@@ -462,5 +565,42 @@ mod tests {
             data: vec![0; 4],
         };
         assert!(matches!(moment.scaled(), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn rejects_a_gzip_volume_that_expands_past_the_limit() {
+        use std::io::Write;
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&[0u8; 128]).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let Err(error) = parse_volume_capped(&compressed, 64, 64) else {
+            panic!("expected a decompression limit error");
+        };
+        let error = error.to_string();
+        assert!(error.contains("exceeds the 64-byte limit"), "{error}");
+    }
+
+    #[test]
+    fn rejects_an_ldm_record_above_the_limit() {
+        let mut bytes = vec![0u8; VOLUME_HEADER_LEN];
+        bytes.extend_from_slice(&64i32.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 8]);
+
+        let Err(error) = parse_volume_capped(&bytes, 1024, 32) else {
+            panic!("expected an LDM record limit error");
+        };
+        let error = error.to_string();
+        assert!(error.contains("above the 32-byte limit"), "{error}");
+    }
+
+    #[test]
+    fn rejects_a_plain_volume_above_the_limit() {
+        let Err(error) = parse_volume_capped(&[0u8; 64], 32, 32) else {
+            panic!("expected a volume limit error");
+        };
+        let error = error.to_string();
+        assert!(error.contains("exceeds the 32-byte limit"), "{error}");
     }
 }

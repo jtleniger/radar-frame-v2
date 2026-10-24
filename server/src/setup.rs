@@ -74,7 +74,8 @@ fn read_stamp(path: &Path) -> Option<String> {
 }
 
 fn write_stamp(path: &Path, stamp: &str) -> Result<()> {
-    fs::write(path, stamp).map_err(|e| Error(format!("{}: {e}", path.display())))
+    crate::fsutil::atomic_write(path, stamp.as_bytes())
+        .map_err(|e| Error(format!("{}: {e}", path.display())))
 }
 
 /// Build the street mask for the configured bbox, fetching the OSM file only
@@ -140,7 +141,8 @@ pub async fn create_streets(
             config.get("bbox", "max_lon")?,
         );
         let body = fetcher.fetch(&query).await?;
-        fs::write(&osm, body).map_err(|e| Error(format!("{}: {e}", osm.display())))?;
+        crate::fsutil::atomic_write(&osm, body.as_bytes())
+            .map_err(|e| Error(format!("{}: {e}", osm.display())))?;
         write_stamp(&paths.streets_osm_bbox(), &stamp)?;
     }
 

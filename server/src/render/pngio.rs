@@ -126,8 +126,11 @@ pub fn write_gray8(
     };
 
     let fail = |e: png::EncodingError| Error(format!("{}: {e}", path.display()));
+    let io_fail = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
 
-    let file = File::create(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
+    let temp = crate::fsutil::TempPath::new(path).map_err(io_fail)?;
+    let file = File::create(temp.path()).map_err(io_fail)?;
+    let synced = file.try_clone().map_err(io_fail)?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Grayscale);
     encoder.set_depth(png::BitDepth::Eight);
@@ -137,6 +140,8 @@ pub fn write_gray8(
     let mut writer = encoder.write_header().map_err(fail)?;
     writer.write_image_data(samples).map_err(fail)?;
     writer.finish().map_err(fail)?;
+    synced.sync_all().map_err(io_fail)?;
+    temp.commit().map_err(io_fail)?;
     Ok(())
 }
 
@@ -161,14 +166,19 @@ pub fn write_rgba(path: &Path, width: usize, height: usize, rgba: &[u8]) -> Resu
     };
 
     let fail = |e: png::EncodingError| Error(format!("{}: {e}", path.display()));
+    let io_fail = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
 
-    let file = File::create(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
+    let temp = crate::fsutil::TempPath::new(path).map_err(io_fail)?;
+    let file = File::create(temp.path()).map_err(io_fail)?;
+    let synced = file.try_clone().map_err(io_fail)?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(fail)?;
     writer.write_image_data(rgba).map_err(fail)?;
     writer.finish().map_err(fail)?;
+    synced.sync_all().map_err(io_fail)?;
+    temp.commit().map_err(io_fail)?;
     Ok(())
 }
 
