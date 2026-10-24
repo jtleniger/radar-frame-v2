@@ -27,7 +27,7 @@ use crate::metrics::{elapsed_ms, Metrics, Outcome, Sample};
 use crate::modes::{self, Deps};
 use crate::paths::Paths;
 use crate::setup;
-use crate::sources::{ForecastProvider, RadarSource};
+use crate::sources::{RadarSource, Sources};
 use crate::state::{Mode, ModeSelect, State};
 
 /// Upper bound for one `/frame` render cycle. Each upstream call is bounded
@@ -40,7 +40,7 @@ pub struct AppState {
     pub paths: Paths,
     pub timezone: Tz,
     pub clock: Arc<dyn Clock>,
-    pub provider: Arc<dyn ForecastProvider>,
+    pub sources: Sources,
     pub radar: Arc<dyn RadarSource>,
     pub engine: Arc<dyn Renderer>,
     pub metrics: Metrics,
@@ -52,7 +52,7 @@ impl AppState {
         config: Config,
         paths: Paths,
         clock: Arc<dyn Clock>,
-        provider: Arc<dyn ForecastProvider>,
+        sources: Sources,
         radar: Arc<dyn RadarSource>,
         engine: Arc<dyn Renderer>,
     ) -> Result<Self> {
@@ -71,7 +71,7 @@ impl AppState {
             paths,
             timezone,
             clock,
-            provider,
+            sources,
             radar,
             engine,
             metrics: Metrics::new(started_at),
@@ -95,7 +95,7 @@ impl AppState {
         }
 
         let started = Instant::now();
-        let status = self.provider.radar_status().await;
+        let status = self.sources.status.radar_status().await;
         self.metrics
             .upstream(now, started.elapsed(), status.is_ok());
 
@@ -485,7 +485,8 @@ async fn frame(
             paths: &app.paths,
             config: &app.config,
             engine: &app.engine,
-            provider: app.provider.as_ref(),
+            forecast: app.sources.forecast.as_ref(),
+            alerts: app.sources.alerts.as_ref(),
             radar: app.radar.as_ref(),
             metrics: &app.metrics,
             now,

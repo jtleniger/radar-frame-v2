@@ -20,7 +20,10 @@ use radar_frame::engine::{Engine, Renderer};
 use radar_frame::paths::Paths;
 use radar_frame::sources::mock::MockProvider;
 use radar_frame::sources::nws;
-use radar_frame::sources::{Forecast, ForecastProvider, Object, RadarSource, RadarStatus};
+use radar_frame::sources::{
+    AlertSource, Forecast, ForecastSource, Object, RadarSource, RadarStatus, RadarStatusSource,
+    Sources,
+};
 use radar_frame::state::{Mode, ModeSelect};
 
 const NOW: &str = "2026-10-21T15:30:00Z";
@@ -110,15 +113,21 @@ struct TestProvider {
 }
 
 #[async_trait]
-impl ForecastProvider for TestProvider {
+impl ForecastSource for TestProvider {
     async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
         Ok(self.forecast.clone())
     }
+}
 
+#[async_trait]
+impl AlertSource for TestProvider {
     async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
         Ok(self.alerts.clone())
     }
+}
 
+#[async_trait]
+impl RadarStatusSource for TestProvider {
     async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
         Ok(self.status)
     }
@@ -143,21 +152,27 @@ impl FlakyProvider {
 }
 
 #[async_trait]
-impl ForecastProvider for FlakyProvider {
+impl ForecastSource for FlakyProvider {
     async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
         if self.fail_forecast.load(Ordering::SeqCst) {
             return Err(radar_frame::error::Error::new("forecast unavailable"));
         }
         Ok(MockProvider::new().forecast_data().clone())
     }
+}
 
+#[async_trait]
+impl AlertSource for FlakyProvider {
     async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
         if self.fail_alerts.load(Ordering::SeqCst) {
             return Err(radar_frame::error::Error::new("alerts unavailable"));
         }
         Ok(Vec::new())
     }
+}
 
+#[async_trait]
+impl RadarStatusSource for FlakyProvider {
     async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
         if self.fail_status.load(Ordering::SeqCst) {
             return Err(radar_frame::error::Error::new("status unavailable"));
@@ -196,7 +211,7 @@ impl CountingProvider {
 }
 
 #[async_trait]
-impl ForecastProvider for CountingProvider {
+impl ForecastSource for CountingProvider {
     async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
         self.forecast_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_forecast.load(Ordering::SeqCst) {
@@ -204,7 +219,10 @@ impl ForecastProvider for CountingProvider {
         }
         Ok(self.forecast.clone())
     }
+}
 
+#[async_trait]
+impl AlertSource for CountingProvider {
     async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
         self.alert_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_alerts.load(Ordering::SeqCst) {
@@ -212,7 +230,10 @@ impl ForecastProvider for CountingProvider {
         }
         Ok(self.alerts.clone())
     }
+}
 
+#[async_trait]
+impl RadarStatusSource for CountingProvider {
     async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
         self.status_calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_status.load(Ordering::SeqCst) {
@@ -239,15 +260,21 @@ impl FlappingProvider {
 }
 
 #[async_trait]
-impl ForecastProvider for FlappingProvider {
+impl ForecastSource for FlappingProvider {
     async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
         Ok(self.forecast.clone())
     }
+}
 
+#[async_trait]
+impl AlertSource for FlappingProvider {
     async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
         Ok(Vec::new())
     }
+}
 
+#[async_trait]
+impl RadarStatusSource for FlappingProvider {
     async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(if call.is_multiple_of(2) {
@@ -413,12 +440,15 @@ fn real_renderer(fixture: &Fixture) -> Arc<dyn Renderer> {
     Arc::new(Engine::new(fixture.paths.clone(), &fixture.config).unwrap())
 }
 
-fn app(
+fn app<P>(
     fixture: &Fixture,
-    provider: Arc<dyn ForecastProvider>,
+    provider: Arc<P>,
     radar: Arc<dyn RadarSource>,
     renderer: Arc<dyn Renderer>,
-) -> (Router, Arc<AppState>) {
+) -> (Router, Arc<AppState>)
+where
+    P: ForecastSource + AlertSource + RadarStatusSource + 'static,
+{
     app_with_clock(
         fixture,
         provider,
@@ -428,19 +458,22 @@ fn app(
     )
 }
 
-fn app_with_clock(
+fn app_with_clock<P>(
     fixture: &Fixture,
-    provider: Arc<dyn ForecastProvider>,
+    provider: Arc<P>,
     radar: Arc<dyn RadarSource>,
     renderer: Arc<dyn Renderer>,
     clock: Arc<dyn Clock>,
-) -> (Router, Arc<AppState>) {
+) -> (Router, Arc<AppState>)
+where
+    P: ForecastSource + AlertSource + RadarStatusSource + 'static,
+{
     let state = Arc::new(
         AppState::new(
             fixture.config.clone(),
             fixture.paths.clone(),
             clock,
-            provider,
+            Sources::from_provider(provider),
             radar,
             renderer,
         )
@@ -890,7 +923,7 @@ async fn failed_cycle_serves_the_last_good_frame() {
 
     let (router, state) = app(
         &fixture,
-        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::clone(&provider),
         Arc::new(FakeRadar::default()),
         real_renderer(&fixture),
     );
@@ -1027,7 +1060,7 @@ async fn radar_status_is_cached_for_a_minute_and_single_flight() {
     let provider = Arc::new(CountingProvider::new());
     let (router, state) = app_with_clock(
         &fixture,
-        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::clone(&provider),
         Arc::new(FakeRadar::default()),
         real_renderer(&fixture),
         clock.clone(),
@@ -1066,7 +1099,7 @@ async fn radar_status_failure_is_not_retried_until_the_ttl_expires() {
     let provider = Arc::new(CountingProvider::new());
     let (router, state) = app_with_clock(
         &fixture,
-        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::clone(&provider),
         Arc::new(FakeRadar::default()),
         real_renderer(&fixture),
         clock.clone(),
@@ -1146,7 +1179,7 @@ async fn forecast_failure_serves_the_last_good_forecast() {
     let provider = Arc::new(CountingProvider::new());
     let (router, state) = app_with_clock(
         &fixture,
-        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::clone(&provider),
         Arc::new(FakeRadar::default()),
         real_renderer(&fixture),
         clock.clone(),
@@ -1190,7 +1223,7 @@ async fn alert_failure_serves_the_last_good_alerts() {
     let provider = Arc::new(CountingProvider::new());
     let (router, state) = app_with_clock(
         &fixture,
-        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::clone(&provider),
         Arc::new(FakeRadar::default()),
         real_renderer(&fixture),
         clock.clone(),

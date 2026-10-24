@@ -1,8 +1,11 @@
-//! Forecast data and the two providers the server selects between.
+//! Forecast, alert, and radar-status sources and the two providers the server
+//! selects between.
 //!
 //! `OnlineProvider` reads Open-Meteo and the NWS API; `MockProvider` mirrors
-//! `sources/mock_forecast.py` for offline development and fixtures. The data
-//! types are `frame-view`'s, so the composed image consumes them directly.
+//! `sources/mock_forecast.py` for offline development and fixtures. Each
+//! consumer takes only the source trait it needs, and [`Sources`] bundles the
+//! three handles built from one provider. The data types are `frame-view`'s,
+//! so the composed image consumes them directly.
 
 pub mod http;
 pub mod mock;
@@ -11,6 +14,8 @@ pub mod nws;
 pub mod online;
 pub mod open_meteo;
 pub mod osm;
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -48,16 +53,52 @@ pub struct Object {
     pub last_modified: DateTime<Utc>,
 }
 
+/// The forecast panel source used by Clear cycles.
 #[async_trait]
-pub trait ForecastProvider: Send + Sync {
+pub trait ForecastSource: Send + Sync {
     /// Current conditions plus the hourly and daily panels. Called once per
     /// update cycle, so each Clear frame gets a fresh forecast; the online
     /// provider fetches all of it in one request.
     async fn forecast(&self) -> Result<Forecast>;
+}
 
+/// The alert overlay source, consumed by both modes.
+#[async_trait]
+pub trait AlertSource: Send + Sync {
     async fn alerts(&self) -> Result<Vec<Alert>>;
+}
 
+/// The NWS radar status used to choose the mode. Kept separate from the
+/// forecast and alerts so a status outage cannot couple to those layers.
+#[async_trait]
+pub trait RadarStatusSource: Send + Sync {
     async fn radar_status(&self) -> Result<RadarStatus>;
+}
+
+/// The three independent source handles the server uses. Construct one from a
+/// provider that implements every source so all calls share its client and
+/// configuration, while each consumer depends only on the data it needs.
+#[derive(Clone)]
+pub struct Sources {
+    pub forecast: Arc<dyn ForecastSource>,
+    pub alerts: Arc<dyn AlertSource>,
+    pub status: Arc<dyn RadarStatusSource>,
+}
+
+impl Sources {
+    pub fn from_provider<P>(provider: Arc<P>) -> Self
+    where
+        P: ForecastSource + AlertSource + RadarStatusSource + 'static,
+    {
+        let forecast: Arc<dyn ForecastSource> = provider.clone();
+        let alerts: Arc<dyn AlertSource> = provider.clone();
+        let status: Arc<dyn RadarStatusSource> = provider;
+        Sources {
+            forecast,
+            alerts,
+            status,
+        }
+    }
 }
 
 #[async_trait]

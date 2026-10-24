@@ -21,7 +21,7 @@ use crate::sources::mock::MockProvider;
 use crate::sources::nexrad::S3Radar;
 use crate::sources::online::OnlineProvider;
 use crate::sources::osm::Overpass;
-use crate::sources::{ForecastProvider, RadarSource};
+use crate::sources::{RadarSource, Sources};
 use crate::state::State;
 
 #[derive(Parser)]
@@ -221,11 +221,14 @@ fn http_client(config: &Config) -> Result<reqwest::Client> {
         .build()?)
 }
 
-fn provider(config: &Config, client: &reqwest::Client, mock: bool) -> Arc<dyn ForecastProvider> {
+fn sources(config: &Config, client: &reqwest::Client, mock: bool) -> Sources {
     if mock {
-        Arc::new(MockProvider::new())
+        Sources::from_provider(Arc::new(MockProvider::new()))
     } else {
-        Arc::new(OnlineProvider::new(client.clone(), config.clone()))
+        Sources::from_provider(Arc::new(OnlineProvider::new(
+            client.clone(),
+            config.clone(),
+        )))
     }
 }
 
@@ -299,7 +302,7 @@ async fn serve(args: Serve) -> Result<()> {
         config.clone(),
         paths,
         Arc::new(SystemClock),
-        provider(&config, &client, args.mock),
+        sources(&config, &client, args.mock),
         radar,
         engine,
     )?);
@@ -368,9 +371,9 @@ async fn render_clear(args: MockArgs) -> Result<()> {
     init_logging(&paths, &config);
 
     let client = http_client(&config)?;
-    let provider = provider(&config, &client, args.mock);
-    let forecast = provider.forecast().await?;
-    let alerts = provider.alerts().await?;
+    let sources = sources(&config, &client, args.mock);
+    let forecast = sources.forecast.forecast().await?;
+    let alerts = sources.alerts.alerts().await?;
 
     let engine = Engine::new(paths, &config)?;
     let now = SystemClock.now();
@@ -388,7 +391,7 @@ async fn render_storm(args: MockArgs) -> Result<()> {
     let client = http_client(&config)?;
     let radar: Arc<dyn RadarSource> = Arc::new(S3Radar::new(client.clone()));
     let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &config)?);
-    let provider = provider(&config, &client, args.mock);
+    let sources = sources(&config, &client, args.mock);
 
     let mut state = State::new();
     let now = SystemClock.now();
@@ -397,7 +400,8 @@ async fn render_storm(args: MockArgs) -> Result<()> {
         paths: &paths,
         config: &config,
         engine: &engine,
-        provider: provider.as_ref(),
+        forecast: sources.forecast.as_ref(),
+        alerts: sources.alerts.as_ref(),
         radar: radar.as_ref(),
         metrics: &metrics,
         now,
