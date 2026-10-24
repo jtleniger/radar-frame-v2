@@ -202,7 +202,7 @@ struct PaletteArgs {
 
 fn context() -> Result<(Paths, Config)> {
     let root = std::env::current_dir()
-        .map_err(|e| crate::error::Error::new(format!("current directory: {e}")))?;
+        .map_err(|e| crate::error::Error::io(format!("current directory: {e}")))?;
     let paths = Paths::new(root);
     let config = Config::load(&paths.config())?;
     Ok((paths, config))
@@ -327,7 +327,7 @@ async fn render_volume(args: RenderVolume) -> Result<()> {
     init_logging(&paths, &config);
 
     if !args.file.is_file() {
-        return Err(crate::error::Error::new(format!(
+        return Err(crate::error::Error::io(format!(
             "{}: no such file",
             args.file.display()
         )));
@@ -356,12 +356,12 @@ async fn render_volume(args: RenderVolume) -> Result<()> {
         radar_engine.render_radar(&volume, args.minimum, &radar_output)
     })
     .await
-    .map_err(|e| crate::error::Error::new(format!("render task: {e}")))??;
+    .map_err(|e| crate::error::Error::render(format!("render task: {e}")))??;
 
     let now = SystemClock.now();
     tokio::task::spawn_blocking(move || engine.render_storm(&[], now))
         .await
-        .map_err(|e| crate::error::Error::new(format!("render task: {e}")))??;
+        .map_err(|e| crate::error::Error::render(format!("render task: {e}")))??;
 
     println!("radar frame: {}", paths.radar_img().display());
     println!("e-ink frame: {}", paths.output_img().display());
@@ -382,7 +382,7 @@ async fn render_clear(args: MockArgs) -> Result<()> {
     let now = SystemClock.now();
     tokio::task::spawn_blocking(move || engine.render_clear(&forecast, &alerts, now))
         .await
-        .map_err(|e| crate::error::Error::new(format!("render task: {e}")))??;
+        .map_err(|e| crate::error::Error::render(format!("render task: {e}")))??;
 
     Ok(())
 }
@@ -418,7 +418,7 @@ async fn render_storm(args: MockArgs) -> Result<()> {
 fn render_archive(args: ArchiveArgs) -> Result<()> {
     let elevations =
         crate::nexrad::elevations::parse_elevations(&args.elevations).ok_or_else(|| {
-            crate::error::Error::new(format!("invalid elevations {}", args.elevations))
+            crate::error::Error::config(format!("invalid elevations {}", args.elevations))
         })?;
 
     crate::render::archive::render_archive(&crate::render::archive::Options {
@@ -457,7 +457,7 @@ fn now(value: Option<String>) -> Result<DateTime<Utc>> {
     match value {
         Some(value) => DateTime::parse_from_rfc3339(&value)
             .map(|time| time.with_timezone(&Utc))
-            .map_err(|e| crate::error::Error::new(format!("{value}: {e}"))),
+            .map_err(|e| crate::error::Error::config(format!("{value}: {e}"))),
         None => Ok(Utc::now()),
     }
 }
@@ -465,7 +465,7 @@ fn now(value: Option<String>) -> Result<DateTime<Utc>> {
 fn timezone(value: &str) -> Result<Tz> {
     value
         .parse()
-        .map_err(|_| crate::error::Error::new(format!("unknown time zone {value}")))
+        .map_err(|_| crate::error::Error::config(format!("unknown time zone {value}")))
 }
 
 fn stdin_json<T: serde::de::DeserializeOwned>() -> Result<T> {

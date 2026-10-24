@@ -45,7 +45,7 @@ pub async fn alerts(client: &reqwest::Client, config: &Config) -> Result<Vec<Ale
         &format!("{BASE_URL}alerts/active"),
         &[("zone", zones.as_str())],
     )
-    .map_err(|e| Error(format!("nws alerts url: {e}")))?;
+    .map_err(|e| Error::new(format!("nws alerts url: {e}")))?;
 
     let body = super::http::get(
         client,
@@ -60,7 +60,7 @@ pub async fn alerts(client: &reqwest::Client, config: &Config) -> Result<Vec<Ale
 pub async fn radar_status(client: &reqwest::Client, config: &Config) -> Result<RadarStatus> {
     let nexrad_id = config.get("radar", "nexrad_id")?;
     let url = reqwest::Url::parse(&format!("{BASE_URL}radar/stations/{nexrad_id}"))
-        .map_err(|e| Error(format!("nws radar url: {e}")))?;
+        .map_err(|e| Error::new(format!("nws radar url: {e}")))?;
 
     let body = super::http::get(
         client,
@@ -125,7 +125,7 @@ fn alert(properties: &Properties) -> Result<Alert> {
 
 fn timestamp(field: &str, value: &str) -> Result<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(value)
-        .map_err(|e| Error(format!("nws alert {field} {value}: {e}")))
+        .map_err(|e| Error::parse(format!("nws alert {field} {value}: {e}")))
 }
 
 #[derive(Deserialize)]

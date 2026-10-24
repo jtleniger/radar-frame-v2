@@ -135,11 +135,14 @@ impl AppState {
     async fn update(&self) -> Update {
         let (reply, response) = oneshot::channel();
         if self.commands.send(Command::Update { reply }).is_err() {
-            return Update::Failed;
+            return Update::Failed(Error::new("updater stopped"));
         }
         match tokio::time::timeout(UPDATE_DEADLINE, response).await {
             Ok(Ok(update)) => update,
-            _ => Update::Failed,
+            _ => Update::Failed(Error::new(format!(
+                "update exceeded the {} s deadline",
+                UPDATE_DEADLINE.as_secs()
+            ))),
         }
     }
 
@@ -180,7 +183,7 @@ enum Update {
     /// A cycle rendered and validated a new frame.
     Published(Arc<PublishedFrame>),
     /// A cycle was due and failed; the last good frame is still published.
-    Failed,
+    Failed(Error),
 }
 
 /// Owns [`State`] and is the only task that mutates it.
@@ -363,7 +366,7 @@ impl Updater {
         );
         tracing::error!("{} mode failed: {error}", mode.name());
         self.state.cycle_failed(now, mode);
-        Update::Failed
+        Update::Failed(error)
     }
 
     /// Publish the state for handlers. A failure means no handler is
@@ -616,17 +619,17 @@ struct SettingsPage {
     has_manual_til: bool,
 }
 
-fn html<T: Template>(page: T) -> Response {
+fn html<T: Template>(page: T) -> Result<Response> {
     match page.render() {
-        Ok(body) => Html(body).into_response(),
+        Ok(body) => Ok(Html(body).into_response()),
         Err(error) => {
             tracing::error!("template: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            Err(Error::from(error))
         }
     }
 }
 
-async fn index(AxumState(app): AxumState<Arc<AppState>>) -> Response {
+async fn index(AxumState(app): AxumState<Arc<AppState>>) -> Result<Response> {
     let snapshot = app.snapshot();
     let fields = fields(&snapshot.state, app.settings.timezone);
 
@@ -650,20 +653,20 @@ struct SettingsForm {
 async fn settings(
     AxumState(app): AxumState<Arc<AppState>>,
     Form(form): Form<SettingsForm>,
-) -> Response {
+) -> Result<Response> {
     let Some(mode_select) = ModeSelect::parse(&form.mode_select) else {
-        return (StatusCode::BAD_REQUEST, "unknown mode-select").into_response();
+        return Ok((StatusCode::BAD_REQUEST, "unknown mode-select").into_response());
     };
     let requested_mode = match form.mode.as_deref() {
         Some(value) => match Mode::parse(value) {
             Some(mode) => Some(mode),
-            None => return (StatusCode::BAD_REQUEST, "unknown mode").into_response(),
+            None => return Ok((StatusCode::BAD_REQUEST, "unknown mode").into_response()),
         },
         None => None,
     };
 
     if !app.apply_settings(mode_select, requested_mode).await {
-        return text_response(StatusCode::SERVICE_UNAVAILABLE, "updater unavailable\n");
+        return Err(Error::unavailable(60, "updater unavailable"));
     }
 
     let snapshot = app.snapshot();
@@ -694,19 +697,26 @@ async fn frame(
         if let Some(frame) = app.snapshot().state.frame.clone() {
             return frame.response(&headers);
         }
-        return png_file(&app.paths.output_img()).await;
+        return match png_file(&app.paths.output_img()).await {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        };
     }
 
     match app.update().await {
         Update::Published(frame) => frame.response(&headers),
-        Update::Failed => last_good(&app.snapshot().state, &headers),
+        Update::Failed(error) => last_good(&app.snapshot().state, &headers, error),
         Update::Skipped => {
             let snapshot = app.snapshot();
             if snapshot.state.failures > 0 {
                 // A cycle failed and the backoff has not elapsed. Keep serving
                 // the last good frame rather than a bare 304, so a client that
                 // restarted during the outage still gets a usable image.
-                last_good(&snapshot.state, &headers)
+                last_good(
+                    &snapshot.state,
+                    &headers,
+                    Error::unavailable(60, "last cycle failed; retrying after backoff"),
+                )
             } else {
                 // The polling contract: no new frame is due, so tell the
                 // client to keep what it has. Include the tag for clients that
@@ -719,18 +729,19 @@ async fn frame(
 
 /// Serve the last good frame after a failed cycle, or 503 before the first
 /// frame has ever been published.
-fn last_good(state: &State, headers: &HeaderMap) -> Response {
+fn last_good(state: &State, headers: &HeaderMap, error: Error) -> Response {
     match state.frame.clone() {
         Some(frame) => {
-            tracing::warn!("serving last good frame after failed cycle");
+            tracing::warn!(error = %error, "serving last good frame after failed cycle");
             frame.response(headers)
         }
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::RETRY_AFTER, "60")],
-            "no frame available yet",
-        )
-            .into_response(),
+        None => {
+            tracing::warn!(error = %error, "no frame available");
+            // The typed map supplies the status and `Retry-After`; a failed
+            // cycle is always retryable, even when the cause was internal.
+            Error::unavailable(error.retry_after().unwrap_or(60), "no frame available yet")
+                .into_response()
+        }
     }
 }
 
@@ -746,16 +757,12 @@ fn not_modified(state: &State) -> Response {
     response
 }
 
-async fn png_file(path: &std::path::Path) -> Response {
+async fn png_file(path: &std::path::Path) -> Result<Response> {
     match tokio::fs::read(path).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
+        Ok(bytes) => Ok(([(header::CONTENT_TYPE, "image/png")], bytes).into_response()),
         Err(error) => {
             tracing::error!("{}: {error}", path.display());
-            if error.kind() == std::io::ErrorKind::NotFound {
-                StatusCode::NOT_FOUND.into_response()
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
+            Err(Error::io_path(path, &error))
         }
     }
 }
@@ -772,12 +779,12 @@ async fn stylesheet() -> Response {
 pub async fn serve(state: Arc<AppState>, address: std::net::SocketAddr) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
-        .map_err(|e| Error(format!("{address}: {e}")))?;
+        .map_err(|e| Error::io(format!("{address}: {e}")))?;
     tracing::info!("listening on {address}");
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .map_err(|e| Error(format!("server: {e}")))?;
+        .map_err(|e| Error::new(format!("server: {e}")))?;
     tracing::info!(event = "shutdown", "server stopped");
     Ok(())
 }

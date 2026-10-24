@@ -68,7 +68,7 @@ pub async fn fetch(
             ("forecast_days", "7"),
         ],
     )
-    .map_err(|e| Error(format!("open-meteo url: {e}")))?;
+    .map_err(|e| Error::new(format!("open-meteo url: {e}")))?;
 
     let body = super::http::get(client, url, "application/json", "open-meteo").await?;
     parse(&body, now, timezone)
@@ -85,16 +85,16 @@ pub fn parse(body: &str, now: DateTime<Utc>, timezone: Tz) -> Result<Forecast> {
     if data.hourly.time.len() != data.hourly.weathercode.len()
         || data.hourly.time.len() != data.hourly.temperature_2m.len()
     {
-        return Err(Error(
-            "open-meteo: hourly arrays have different lengths".into(),
+        return Err(Error::parse(
+            "open-meteo: hourly arrays have different lengths",
         ));
     }
     if data.daily.time.len() != data.daily.weathercode.len()
         || data.daily.time.len() != data.daily.temperature_2m_max.len()
         || data.daily.time.len() != data.daily.temperature_2m_min.len()
     {
-        return Err(Error(
-            "open-meteo: daily arrays have different lengths".into(),
+        return Err(Error::parse(
+            "open-meteo: daily arrays have different lengths",
         ));
     }
 
@@ -104,7 +104,7 @@ pub fn parse(body: &str, now: DateTime<Utc>, timezone: Tz) -> Result<Forecast> {
         .and_then(|time| time.with_second(0))
         .and_then(|time| time.with_nanosecond(0))
         .ok_or_else(|| {
-            Error(format!(
+            Error::new(format!(
                 "open-meteo: cannot truncate {now_local} to the hour"
             ))
         })?;
@@ -112,7 +112,7 @@ pub fn parse(body: &str, now: DateTime<Utc>, timezone: Tz) -> Result<Forecast> {
     let mut hours = Vec::new();
     for (index, raw) in data.hourly.time.iter().enumerate() {
         let naive = NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M")
-            .map_err(|e| Error(format!("open-meteo hourly time {raw}: {e}")))?;
+            .map_err(|e| Error::parse(format!("open-meteo hourly time {raw}: {e}")))?;
 
         // pytz's `localize` without `is_dst` resolves ambiguous wall times to
         // standard time, which is chrono's `latest()`.
@@ -135,7 +135,7 @@ pub fn parse(body: &str, now: DateTime<Utc>, timezone: Tz) -> Result<Forecast> {
     let mut days = Vec::new();
     for (index, raw) in data.daily.time.iter().enumerate() {
         let date = NaiveDate::parse_from_str(raw, "%Y-%m-%d")
-            .map_err(|e| Error(format!("open-meteo daily time {raw}: {e}")))?;
+            .map_err(|e| Error::parse(format!("open-meteo daily time {raw}: {e}")))?;
         days.push(ForecastDay {
             day: date.format("%a").to_string().to_lowercase(),
             high_f: data.daily.temperature_2m_max[index],

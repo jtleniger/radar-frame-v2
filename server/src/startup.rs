@@ -31,13 +31,13 @@ pub fn validate(config: &Config, paths: &Paths) -> Result<Settings> {
 fn validate_data_dir(paths: &Paths) -> Result<()> {
     let data = paths.data_dir();
     if !data.is_dir() {
-        return Err(Error::new(format!(
+        return Err(Error::config(format!(
             "startup: data directory {} does not exist; create it or run `radar-frame setup`",
             data.display()
         )));
     }
     if !setup::data_writable(paths) {
-        return Err(Error::new(format!(
+        return Err(Error::config(format!(
             "startup: data directory {} is not writable",
             data.display()
         )));
@@ -48,9 +48,9 @@ fn validate_data_dir(paths: &Paths) -> Result<()> {
 fn validate_palette(paths: &Paths) -> Result<()> {
     let path = paths.palette_img();
     let palette = Palette::from_png(&path)
-        .map_err(|error| Error::new(format!("startup: {}: {error}", path.display())))?;
+        .map_err(|error| Error::config(format!("startup: {}: {error}", path.display())))?;
     if palette.colors.len() != EINK_COLORS.len() {
-        return Err(Error::new(format!(
+        return Err(Error::config(format!(
             "startup: {} has {} colours, expected the {}-colour e-ink palette",
             path.display(),
             palette.colors.len(),

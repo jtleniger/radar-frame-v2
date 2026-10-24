@@ -267,13 +267,13 @@ where
 {
     tokio::task::spawn_blocking(move || f(engine.as_ref()))
         .await
-        .map_err(|e| Error(format!("render task: {e}")))?
+        .map_err(|e| Error::render(format!("render task: {e}")))?
 }
 
 /// Rename a validated staging artifact over its published name.
 fn commit(temp: &Path, destination: &Path) -> Result<()> {
     fs::rename(temp, destination).map_err(|error| {
-        Error(format!(
+        Error::io(format!(
             "{} -> {}: {error}",
             temp.display(),
             destination.display()

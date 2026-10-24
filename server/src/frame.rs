@@ -116,20 +116,20 @@ fn validate(bytes: &[u8]) -> Result<()> {
     let decoder = png::Decoder::new(Cursor::new(bytes));
     let mut reader = decoder
         .read_info()
-        .map_err(|error| Error::new(format!("frame png: {error}")))?;
+        .map_err(|error| Error::render(format!("frame png: {error}")))?;
     if reader.info().width == 0 || reader.info().height == 0 {
-        return Err(Error::new("frame png: empty image"));
+        return Err(Error::render("frame png: empty image"));
     }
 
     // Decode the whole image, not just the header, so a truncated file can
     // never replace the last good frame.
     let size = reader
         .output_buffer_size()
-        .ok_or_else(|| Error::new("frame png: image too large"))?;
+        .ok_or_else(|| Error::render("frame png: image too large"))?;
     let mut buffer = vec![0; size];
     reader
         .next_frame(&mut buffer)
-        .map_err(|error| Error::new(format!("frame png: {error}")))?;
+        .map_err(|error| Error::render(format!("frame png: {error}")))?;
     Ok(())
 }
 
