@@ -105,8 +105,8 @@ ID form: `<category>.<finding>.<action>`.
 | [x] | 1.5.1 | Skip malformed alerts with a warning |
 | [x] | 1.5.2 | Map missing `rda` to down/Clear |
 | [x] | 1.6.1 | Distinguish `404`/`500` in `png_file` |
-| [ ] | 1.6.2 | Handle logging init/rotation failures |
-| [ ] | 1.6.3 | Add client request timeout |
+| [x] | 1.6.2 | Handle logging init/rotation failures |
+| [x] | 1.6.3 | Add client request timeout |
 | [x] | 2.1.1 | Add `/healthz`, `/readyz`, `/status` |
 | [x] | 2.2.1 | Structured per-cycle and per-upstream logs |
 | [x] | 2.2.2 | Expose counters/ages in `/status` |
@@ -135,11 +135,11 @@ ID form: `<category>.<finding>.<action>`.
 | [ ] | 6.3.1 | Collapse `Renderer`/single `Settings` |
 | [ ] | 7.1.1 | Background updater + immutable snapshot |
 | [ ] | 7.1.2 | Interim no-lock-across-await / single-flight |
-| [ ] | 7.2.1 | Upstream and handler timeouts |
-| [ ] | 7.2.2 | Graceful shutdown + panic hook |
+| [x] | 7.2.1 | Upstream and handler timeouts |
+| [x] | 7.2.2 | Graceful shutdown + panic hook |
 | [ ] | 7.3.1 | Typed errors + HTTP mapping |
 | [ ] | 7.4.1 | Startup validation |
-| [ ] | 7.5.1 | systemd hardening |
+| [x] | 7.5.1 | systemd hardening |
 | [ ] | 7.6.1 | Add regression tests |
 
 ## Details

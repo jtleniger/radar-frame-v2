@@ -147,7 +147,7 @@ The color table is embedded (`assets/gdal-colors.txt`). To override it:
 
 ```ini
 [render]
-colors = /opt/radar-frame/colors.txt
+colors = colors.txt
 ```
 
 Omit the key to use the built-in table; deployment no longer copies
@@ -170,46 +170,58 @@ before replacing the previous files, and `data/streets.osm.hash` records the
 body fingerprint. `setup` performs the same steps without serving and fails if
 the mask cannot be built.
 
-Logs go to `radar-frame.log`, rotated at 100 kB with four backups.
+Logs go to `radar-frame.log`, rotated at 100 kB with four backups. If the file
+cannot be opened, the service logs to stderr (the journal) instead; a failed
+rotation is reported on stderr and appending continues until the next attempt.
 
 ## Deployment
 
-The installed layout is flat:
+The installed layout is flat under the service user's home:
 
 ```text
-/opt/radar-frame/
+~/radar-frame/
   bin/radar-frame
   config/config.ini
   data/
   radar-frame.log
 ```
 
+The example unit uses `%h`, which systemd expands to the `radar-frame` user's
+home directory, for `WorkingDirectory=`, `ExecStart=`, and `ReadWritePaths=`.
+The commands below therefore install into `/home/radar-frame/radar-frame`. To
+run as a different user, change `User=`/`Group=` in the unit; `%h` follows that
+user's home.
+
 ```sh
 cd server
 cargo build --release
-sudo useradd --system --user-group --home /opt/radar-frame --shell /usr/sbin/nologin radar-frame
-sudo install -d -o radar-frame -g radar-frame /opt/radar-frame/bin /opt/radar-frame/config
-sudo install -m 0755 target/release/radar-frame /opt/radar-frame/bin/radar-frame
-sudo install -m 0644 config/config.example.ini /opt/radar-frame/config/config.ini
+sudo useradd --system --user-group --create-home --home-dir /home/radar-frame --shell /usr/sbin/nologin radar-frame
+sudo install -d -o radar-frame -g radar-frame /home/radar-frame/radar-frame/bin /home/radar-frame/radar-frame/config
+sudo install -m 0755 target/release/radar-frame /home/radar-frame/radar-frame/bin/radar-frame
+sudo install -m 0644 config/config.example.ini /home/radar-frame/radar-frame/config/config.ini
 sudo install -m 0644 radar-frame.example.service /etc/systemd/system/radar-frame.service
-sudo chown -R radar-frame:radar-frame /opt/radar-frame
+sudo chown -R radar-frame:radar-frame /home/radar-frame/radar-frame
 sudo systemctl daemon-reload
 sudo systemctl enable --now radar-frame
 ```
 
-Edit `/opt/radar-frame/config/config.ini` before starting. `gdal-colors.txt` is
-not installed; it is embedded in the binary.
+Edit `/home/radar-frame/radar-frame/config/config.ini` before starting.
+`gdal-colors.txt` is not installed; it is embedded in the binary.
 
 Upgrade from the old nested `/opt/radar-frame/server/` layout:
 
 ```sh
 sudo systemctl stop radar-frame
-sudo mv /opt/radar-frame/server/config /opt/radar-frame/server/data /opt/radar-frame/
+sudo usermod --home /home/radar-frame radar-frame
+sudo install -d -o radar-frame -g radar-frame /home/radar-frame/radar-frame
+sudo mv /opt/radar-frame/server/config /opt/radar-frame/server/data /home/radar-frame/radar-frame/
+sudo mv /opt/radar-frame/radar-frame.log /home/radar-frame/radar-frame/ 2>/dev/null || true
+sudo mv /opt/radar-frame/radar-frame.log.* /home/radar-frame/radar-frame/ 2>/dev/null || true
 sudo rm -rf /opt/radar-frame/server
-sudo install -d -o radar-frame -g radar-frame /opt/radar-frame/bin
-sudo install -m 0755 target/release/radar-frame /opt/radar-frame/bin/radar-frame
+sudo install -d -o radar-frame -g radar-frame /home/radar-frame/radar-frame/bin
+sudo install -m 0755 target/release/radar-frame /home/radar-frame/radar-frame/bin/radar-frame
 sudo install -m 0644 radar-frame.example.service /etc/systemd/system/radar-frame.service
-sudo chown -R radar-frame:radar-frame /opt/radar-frame
+sudo chown -R radar-frame:radar-frame /home/radar-frame/radar-frame
 sudo systemctl daemon-reload
 sudo systemctl start radar-frame
 ```
@@ -245,7 +257,9 @@ Network use:
 
 Every outbound request uses the `User-Agent` from `[nws] user_agent`; set it to
 a contact address, as the NWS API asks. Without the setting the generic
-`radar-frame` value is used.
+`radar-frame` value is used. Requests give up after a 5 s connect and 30 s
+total timeout, one `/frame` render cycle is capped at 180 s, and SIGTERM/SIGINT
+drain in-flight requests before the process exits.
 
 ## Rendering and inspecting output
 

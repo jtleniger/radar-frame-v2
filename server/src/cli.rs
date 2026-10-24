@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -217,7 +216,8 @@ fn http_client(config: &Config) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(config.user_agent())
         .gzip(true)
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(crate::sources::http::CONNECT_TIMEOUT)
+        .timeout(crate::sources::http::REQUEST_TIMEOUT)
         .build()?)
 }
 
