@@ -102,8 +102,8 @@ ID form: `<category>.<finding>.<action>`.
 | [x] | 1.3.2 | Validate before replacing last-good volume/frame; retain last-good pair |
 | [ ] | 1.4.1 | Make streets optional at startup; background retry with backoff |
 | [ ] | 1.4.2 | Validate OSM/mask before writing OSM file and stamps |
-| [ ] | 1.5.1 | Skip malformed alerts with a warning |
-| [ ] | 1.5.2 | Map missing `rda` to down/Clear |
+| [x] | 1.5.1 | Skip malformed alerts with a warning |
+| [x] | 1.5.2 | Map missing `rda` to down/Clear |
 | [x] | 1.6.1 | Distinguish `404`/`500` in `png_file` |
 | [ ] | 1.6.2 | Handle logging init/rotation failures |
 | [ ] | 1.6.3 | Add client request timeout |
