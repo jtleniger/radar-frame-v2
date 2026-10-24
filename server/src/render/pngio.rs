@@ -128,7 +128,7 @@ pub fn write_gray8(
     let fail = |e: png::EncodingError| Error(format!("{}: {e}", path.display()));
     let io_fail = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
 
-    let temp = crate::fsutil::TempPath::new(path).map_err(io_fail)?;
+    let temp = crate::util::fsutil::TempPath::new(path).map_err(io_fail)?;
     let file = File::create(temp.path()).map_err(io_fail)?;
     let synced = file.try_clone().map_err(io_fail)?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
@@ -168,7 +168,7 @@ pub fn write_rgba(path: &Path, width: usize, height: usize, rgba: &[u8]) -> Resu
     let fail = |e: png::EncodingError| Error(format!("{}: {e}", path.display()));
     let io_fail = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
 
-    let temp = crate::fsutil::TempPath::new(path).map_err(io_fail)?;
+    let temp = crate::util::fsutil::TempPath::new(path).map_err(io_fail)?;
     let file = File::create(temp.path()).map_err(io_fail)?;
     let synced = file.try_clone().map_err(io_fail)?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);

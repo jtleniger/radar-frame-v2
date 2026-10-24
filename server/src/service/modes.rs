@@ -8,13 +8,13 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 
-use crate::engine::Renderer;
+use crate::config::paths::Paths;
+use crate::config::settings::Settings;
 use crate::error::{Error, Result};
-use crate::metrics::{elapsed_ms, Metrics};
-use crate::paths::Paths;
-use crate::settings::Settings;
+use crate::service::engine::Renderer;
 use crate::sources::{AlertSource, Forecast, ForecastSource, RadarSource};
 use crate::state::{Mode, State};
+use crate::telemetry::metrics::{elapsed_ms, Metrics};
 use crate::view::forecast::Alert;
 
 /// The default gate cutoff used by the frame path (`render()` in

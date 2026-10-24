@@ -6,11 +6,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use radar_frame::config::paths::Paths;
+use radar_frame::config::settings::Settings;
 use radar_frame::config::Config;
-use radar_frame::engine::{Engine, Renderer};
-use radar_frame::modes::{self, Deps};
-use radar_frame::paths::Paths;
-use radar_frame::settings::Settings;
+use radar_frame::service::engine::{Engine, Renderer};
+use radar_frame::service::modes::{self, Deps};
 use radar_frame::sources::mock::MockProvider;
 use radar_frame::sources::{
     AlertSource, Forecast, ForecastSource, Object, RadarSource, RadarStatus, RadarStatusSource,
@@ -179,7 +179,7 @@ async fn rejected_volume_keeps_the_last_good_pair() {
         },
         bytes: b"not a volume".to_vec(),
     };
-    let metrics = radar_frame::metrics::Metrics::new(now());
+    let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
     let mut state = State::new();
     let settings = Settings::from_config(&config).unwrap();
 
@@ -214,7 +214,7 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
     let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &settings));
     let provider = CountingProvider::new();
     let radar = NoRadar;
-    let metrics = radar_frame::metrics::Metrics::new(now());
+    let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
     let mut state = State::new();
 
     let mut frames = Vec::new();
@@ -337,7 +337,7 @@ async fn storm_with_failing_radar(radar: &dyn RadarSource) -> modes::Cycle {
     let config = Config::parse(CONFIG).unwrap();
     let engine: Arc<dyn Renderer> = Arc::new(RecordingRenderer);
     let provider = MockProvider::new();
-    let metrics = radar_frame::metrics::Metrics::new(now());
+    let metrics = radar_frame::telemetry::metrics::Metrics::new(now());
     let mut state = State::new();
     let settings = Settings::from_config(&config).unwrap();
     let deps = Deps {

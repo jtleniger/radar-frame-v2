@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::MakeWriter;
 
-use crate::paths::Paths;
+use crate::config::paths::Paths;
 
 const MAX_BYTES: u64 = 100_000;
 const BACKUPS: usize = 4;

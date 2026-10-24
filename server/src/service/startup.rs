@@ -9,12 +9,12 @@
 //! or unreadable mask is reported and rebuilt in the background instead of
 //! stopping the service (see `setup::retry_streets`).
 
+use crate::config::constants::{RADAR_HEIGHT, WIDTH};
+use crate::config::paths::Paths;
+use crate::config::settings::Settings;
 use crate::config::Config;
-use crate::constants::{RADAR_HEIGHT, WIDTH};
 use crate::error::{Error, Result};
-use crate::paths::Paths;
-use crate::settings::Settings;
-use crate::setup;
+use crate::service::setup;
 use crate::view::palette::{Palette, EINK_COLORS};
 
 /// Validate the settings and artifacts `serve` needs before it binds.
