@@ -191,7 +191,9 @@ Copy `config/config.example.ini` to `config/config.ini` and edit it. Required:
 - `[forecast] lat`, `lon`, `timezone` — the forecast point and the IANA zone
   used by the info bar;
 - `[nws] user_agent`, `zone`, `fire_zone` — the contact address NWS asks for,
-  and the alert zones.
+  and the alert zones;
+- `[osm] user_agent` — the contact address sent with Overpass street-data
+  requests.
 
 `[logging] level` (default `INFO`) sets the log level.
 
@@ -321,11 +323,13 @@ Network use:
 - Overpass: only when `data/streets.osm` or the mask is missing or stale for
   `[bbox]`; a hand-written OSM file is adopted without a request.
 
-Every outbound request uses the `User-Agent` from `[nws] user_agent`; set it to
-a contact address, as the NWS API asks. Without the setting the generic
-`radar-frame` value is used. Requests give up after a 5 s connect and 30 s
-total timeout, one `/frame` render cycle is capped at 180 s, and SIGTERM/SIGINT
-drain in-flight requests before the process exits.
+Every outbound request uses a `User-Agent` that identifies a contact: NWS,
+Open-Meteo, and S3 requests use `[nws] user_agent`, while Overpass requests use
+`[osm] user_agent`. Set both to a contact address, as the NWS API and Overpass
+ask for. Without the settings the generic `radar-frame` value is used, but
+startup rejects it. Requests give up after a 5 s connect and 30 s total timeout,
+one `/frame` render cycle is capped at 180 s, and SIGTERM/SIGINT drain in-flight
+requests before the process exits.
 
 ## Rendering and inspecting output
 

@@ -124,6 +124,9 @@ timezone = America/Chicago
 user_agent = radar-frame (test@example.com)
 zone = OKZ025
 fire_zone = OKZ025
+
+[osm]
+user_agent = radar-frame (test@example.com)
 ";
 
     struct Fixture {
@@ -174,6 +177,7 @@ fire_zone = OKZ025
         assert_eq!(validated.zone, "OKZ025");
         assert_eq!(validated.fire_zone, "OKZ025");
         assert!(validated.user_agent.starts_with("radar-frame"));
+        assert!(validated.osm_user_agent.starts_with("radar-frame"));
         assert!(!validated.streets);
     }
 
@@ -241,6 +245,17 @@ fire_zone = OKZ025
                 .unwrap();
         let error = validate(&config, &fixture.paths).err().unwrap().to_string();
         assert!(error.contains("user_agent"), "{error}");
+    }
+
+    #[test]
+    fn missing_osm_user_agent_is_rejected() {
+        let fixture = Fixture::new();
+        let config = Config::parse(
+            &VALID.replace("[osm]\nuser_agent = radar-frame (test@example.com)\n", ""),
+        )
+        .unwrap();
+        let error = validate(&config, &fixture.paths).err().unwrap().to_string();
+        assert!(error.contains("[osm] user_agent"), "{error}");
     }
 
     #[test]

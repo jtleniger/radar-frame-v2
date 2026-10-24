@@ -39,6 +39,9 @@ timezone = America/Chicago
 user_agent = radar-frame (test@example.com)
 zone = OKZ025
 fire_zone = OKZ025
+
+[osm]
+user_agent = radar-frame (test@example.com)
 ";
 
 fn now() -> DateTime<Utc> {

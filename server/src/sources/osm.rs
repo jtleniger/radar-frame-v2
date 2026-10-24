@@ -25,11 +25,17 @@ pub trait OsmFetcher: Send + Sync {
 
 pub struct Overpass {
     client: reqwest::Client,
+    user_agent: String,
+    url: String,
 }
 
 impl Overpass {
-    pub fn new(client: reqwest::Client) -> Self {
-        Overpass { client }
+    pub fn new(client: reqwest::Client, user_agent: impl Into<String>) -> Self {
+        Overpass {
+            client,
+            user_agent: user_agent.into(),
+            url: URL.to_string(),
+        }
     }
 }
 
@@ -40,7 +46,8 @@ impl OsmFetcher for Overpass {
 
         let response = self
             .client
-            .post(URL)
+            .post(&self.url)
+            .header(reqwest::header::USER_AGENT, self.user_agent.as_str())
             .form(&[("data", query)])
             .send()
             .await?;
@@ -52,7 +59,7 @@ impl OsmFetcher for Overpass {
             return Err(Error::http_status(
                 status.as_u16(),
                 retry_after,
-                format!("{URL}: {status}: {body}"),
+                format!("{}: {status}: {body}", self.url),
             ));
         }
 
@@ -69,6 +76,37 @@ mod tests {
         assert_eq!(
             query("35.35", "-97.26", "35.39", "-97.21"),
             "\n    way[\"highway\"~\"motorway|primary\"](35.35,-97.26,35.39,-97.21);\n    out body;\n    >;\n    out skel qt;\n    "
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_sends_the_configured_user_agent() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let read = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&request[..read]).into_owned()
+        });
+
+        let fetcher = Overpass {
+            client: reqwest::Client::new(),
+            user_agent: "radar-frame (osm@example.com)".into(),
+            url: format!("http://{address}/api/interpreter"),
+        };
+        assert_eq!(fetcher.fetch("query").await.unwrap(), "body");
+
+        let request = server.await.unwrap().to_ascii_lowercase();
+        assert!(
+            request.contains("user-agent: radar-frame (osm@example.com)"),
+            "{request}"
         );
     }
 }
