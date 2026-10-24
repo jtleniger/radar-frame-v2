@@ -19,13 +19,13 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::clock::Clock;
-use crate::config::Config;
 use crate::engine::Renderer;
 use crate::error::{Error, Result};
 use crate::frame::PublishedFrame;
 use crate::metrics::{elapsed_ms, Metrics, Outcome, Sample};
 use crate::modes::{self, Deps};
 use crate::paths::Paths;
+use crate::settings::Settings;
 use crate::setup;
 use crate::sources::{RadarSource, Sources};
 use crate::state::{Mode, ModeSelect, State};
@@ -36,9 +36,8 @@ use crate::state::{Mode, ModeSelect, State};
 const CYCLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
 
 pub struct AppState {
-    pub config: Config,
+    pub settings: Settings,
     pub paths: Paths,
-    pub timezone: Tz,
     pub clock: Arc<dyn Clock>,
     pub sources: Sources,
     pub radar: Arc<dyn RadarSource>,
@@ -49,14 +48,13 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(
-        config: Config,
+        settings: Settings,
         paths: Paths,
         clock: Arc<dyn Clock>,
         sources: Sources,
         radar: Arc<dyn RadarSource>,
         engine: Arc<dyn Renderer>,
-    ) -> Result<Self> {
-        let timezone = config.timezone("forecast", "timezone")?;
+    ) -> Self {
         let started_at = clock.now();
 
         // A frame left by the previous process is still the last good one;
@@ -66,17 +64,16 @@ impl AppState {
         let mut state = State::load(&paths.state_file());
         state.frame = PublishedFrame::load(&paths.output_img()).map(Arc::new);
 
-        Ok(AppState {
-            config,
+        AppState {
+            settings,
             paths,
-            timezone,
             clock,
             sources,
             radar,
             engine,
             metrics: Metrics::new(started_at),
             state: Mutex::new(state),
-        })
+        }
     }
 
     /// Swap the mode from the NWS radar status. True when it changed.
@@ -204,7 +201,7 @@ async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
         let state = app.state.lock().await;
         let (ready, reason) = readiness(&state, now, writable);
         (
-            fields(&state, app.timezone),
+            fields(&state, app.settings.timezone),
             state.mode,
             state.manual_til,
             state.last_updated,
@@ -379,7 +376,7 @@ fn html<T: Template>(page: T) -> Response {
 
 async fn index(AxumState(app): AxumState<Arc<AppState>>) -> Response {
     let state = app.state.lock().await;
-    let fields = fields(&state, app.timezone);
+    let fields = fields(&state, app.settings.timezone);
 
     html(IndexPage {
         mode: fields.mode,
@@ -419,7 +416,7 @@ async fn settings(
     state.apply_settings(mode_select, requested_mode, app.clock.now());
     persist(&app.paths, &state);
 
-    let fields = fields(&state, app.timezone);
+    let fields = fields(&state, app.settings.timezone);
     drop(state);
 
     html(SettingsPage {
@@ -483,7 +480,7 @@ async fn frame(
     if state.cycle_due(now) {
         let deps = Deps {
             paths: &app.paths,
-            config: &app.config,
+            settings: &app.settings,
             engine: &app.engine,
             forecast: app.sources.forecast.as_ref(),
             alerts: app.sources.alerts.as_ref(),

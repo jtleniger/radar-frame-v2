@@ -18,6 +18,7 @@ use radar_frame::clock::{Clock, FixedClock};
 use radar_frame::config::Config;
 use radar_frame::engine::{Engine, Renderer};
 use radar_frame::paths::Paths;
+use radar_frame::settings::Settings;
 use radar_frame::sources::mock::MockProvider;
 use radar_frame::sources::nws;
 use radar_frame::sources::{
@@ -93,6 +94,10 @@ impl Fixture {
             paths,
             config: Config::parse(CONFIG).unwrap(),
         }
+    }
+
+    fn settings(&self) -> Settings {
+        Settings::from_config(&self.config).unwrap()
     }
 
     /// Drop persisted state so a recreated app starts from defaults, as a
@@ -296,7 +301,7 @@ struct ToggleRenderer {
 impl ToggleRenderer {
     fn new(fixture: &Fixture, radar_png: PathBuf) -> Self {
         ToggleRenderer {
-            engine: Engine::new(fixture.paths.clone(), &fixture.config).unwrap(),
+            engine: Engine::new(fixture.paths.clone(), &fixture.settings()),
             radar_png,
             fail_clear: AtomicBool::new(false),
             clear_calls: AtomicUsize::new(0),
@@ -437,7 +442,7 @@ impl Clock for TestClock {
 }
 
 fn real_renderer(fixture: &Fixture) -> Arc<dyn Renderer> {
-    Arc::new(Engine::new(fixture.paths.clone(), &fixture.config).unwrap())
+    Arc::new(Engine::new(fixture.paths.clone(), &fixture.settings()))
 }
 
 fn app<P>(
@@ -468,17 +473,14 @@ fn app_with_clock<P>(
 where
     P: ForecastSource + AlertSource + RadarStatusSource + 'static,
 {
-    let state = Arc::new(
-        AppState::new(
-            fixture.config.clone(),
-            fixture.paths.clone(),
-            clock,
-            Sources::from_provider(provider),
-            radar,
-            renderer,
-        )
-        .unwrap(),
-    );
+    let state = Arc::new(AppState::new(
+        fixture.settings(),
+        fixture.paths.clone(),
+        clock,
+        Sources::from_provider(provider),
+        radar,
+        renderer,
+    ));
     (api::router(Arc::clone(&state)), state)
 }
 
@@ -691,7 +693,7 @@ async fn storm_frame_matches_flask() {
     };
 
     let renderer = Arc::new(TestRenderer {
-        engine: Engine::new(fixture.paths.clone(), &fixture.config).unwrap(),
+        engine: Engine::new(fixture.paths.clone(), &fixture.settings()),
         radar_png: golden("debug-frame.png"),
     });
 
@@ -1301,7 +1303,7 @@ async fn restart_restores_the_schedule_and_reuses_the_volume() {
         downloads: Arc::clone(&downloads),
     });
     let renderer = Arc::new(TestRenderer {
-        engine: Engine::new(fixture.paths.clone(), &fixture.config).unwrap(),
+        engine: Engine::new(fixture.paths.clone(), &fixture.settings()),
         radar_png: golden("debug-frame.png"),
     });
     let provider = Arc::new(TestProvider {
