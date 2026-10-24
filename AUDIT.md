@@ -113,9 +113,9 @@ ID form: `<category>.<finding>.<action>`.
 | [rejected] | ~~2.3.1~~ | ~~stdout + journald, `RUST_LOG`, 7–14 day retention~~ |
 | [x] | 2.4.1 | Startup summary log |
 | [x] | 2.4.2 | Per-cycle frame provenance log |
-| [ ] | 3.1.1 | TTL-cache radar status with single-flight |
-| [ ] | 3.2.1 | Backoff + jitter with `last_attempt`/`next_attempt` |
-| [ ] | 3.2.2 | Per-source last-known-good cache |
+| [x] | 3.1.1 | TTL-cache radar status with single-flight |
+| [x] | 3.2.1 | Backoff + jitter with `last_attempt`/`next_attempt` |
+| [x] | 3.2.2 | Per-source last-known-good cache |
 | [ ] | 3.3.1 | Mode hysteresis/minimum dwell |
 | [ ] | 3.4.1 | Persist state and radar key/mtime across restarts |
 | [rejected] | ~~3.5.1~~ | ~~Localhost default; auth/rate limit public endpoints~~ |

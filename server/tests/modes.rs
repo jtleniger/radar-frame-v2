@@ -228,3 +228,129 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
         "the second cycle must publish the new forecast"
     );
 }
+
+struct ListingFails;
+
+#[async_trait]
+impl RadarSource for ListingFails {
+    async fn latest(
+        &self,
+        _nexrad_id: &str,
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<Option<Object>> {
+        Err(radar_frame::error::Error::new("listing failed"))
+    }
+
+    async fn download(
+        &self,
+        _object: &Object,
+        _destination: &std::path::Path,
+    ) -> radar_frame::error::Result<u64> {
+        unreachable!("the listing already failed")
+    }
+}
+
+struct DownloadFails;
+
+#[async_trait]
+impl RadarSource for DownloadFails {
+    async fn latest(
+        &self,
+        _nexrad_id: &str,
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<Option<Object>> {
+        Ok(Some(Object {
+            key: "2026/10/21/KTLX/KTLX20261021_153000_V06".into(),
+            last_modified: now(),
+        }))
+    }
+
+    async fn download(
+        &self,
+        _object: &Object,
+        _destination: &std::path::Path,
+    ) -> radar_frame::error::Result<u64> {
+        Err(radar_frame::error::Error::new("download failed"))
+    }
+}
+
+/// Writes a placeholder radar frame without parsing the volume.
+struct RecordingRenderer;
+
+impl Renderer for RecordingRenderer {
+    fn render_radar(
+        &self,
+        _volume: &std::path::Path,
+        _minimum: f64,
+        output: &std::path::Path,
+    ) -> radar_frame::error::Result<radar_frame::render::archive::Summary> {
+        std::fs::write(output, b"png")?;
+        Ok(radar_frame::render::archive::Summary {
+            elevations: vec![1],
+            radials: 1,
+            gates: 1,
+        })
+    }
+
+    fn render_storm(
+        &self,
+        _alerts: &[Alert],
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        Ok(())
+    }
+
+    fn render_clear(
+        &self,
+        _forecast: &Forecast,
+        _alerts: &[Alert],
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        Ok(())
+    }
+}
+
+/// Run one Storm cycle against a radar source that must fail, with a volume
+/// already on disk. The cycle succeeds from the last good volume and marks
+/// itself degraded.
+async fn storm_with_failing_radar(radar: &dyn RadarSource) -> modes::Cycle {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    std::fs::create_dir_all(paths.data_dir()).unwrap();
+    std::fs::write(paths.radar_raw(), b"old-volume").unwrap();
+
+    let config = Config::parse(CONFIG).unwrap();
+    let engine: Arc<dyn Renderer> = Arc::new(RecordingRenderer);
+    let provider = MockProvider::new();
+    let metrics = radar_frame::metrics::Metrics::new(now());
+    let mut state = State::new();
+    let deps = Deps {
+        paths: &paths,
+        config: &config,
+        engine: &engine,
+        provider: &provider,
+        radar,
+        metrics: &metrics,
+        now: now(),
+    };
+
+    let cycle = modes::run(Mode::Storm, &deps, &mut state).await.unwrap();
+
+    assert_eq!(std::fs::read(paths.radar_raw()).unwrap(), b"old-volume");
+    assert_eq!(state.radar_last_updated, DateTime::UNIX_EPOCH);
+    assert!(cycle
+        .degraded
+        .as_deref()
+        .is_some_and(|reason| reason.contains("radar")));
+    cycle
+}
+
+#[tokio::test]
+async fn listing_failure_uses_the_last_good_volume() {
+    storm_with_failing_radar(&ListingFails).await;
+}
+
+#[tokio::test]
+async fn download_failure_uses_the_last_good_volume() {
+    storm_with_failing_radar(&DownloadFails).await;
+}

@@ -6,6 +6,7 @@
 //! `requests`, boto3, and the mode/state modules.
 
 pub mod api;
+pub mod backoff;
 pub mod cli;
 pub mod clock;
 pub mod config;

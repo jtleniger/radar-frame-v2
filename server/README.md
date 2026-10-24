@@ -88,12 +88,12 @@ the fused `render archive` (Archive II -> REF frame). `VEL`, `SW`, `ZDR`,
 
 | Path | Purpose |
 |---|---|
-| `GET /frame` | Current e-ink frame; `304` until the next cycle is due. |
+| `GET /frame` | Current e-ink frame; `304` until the next cycle is due. A failed cycle keeps serving the last good frame and backs off. |
 | `GET /frame?debug=true` | Last published frame, bypassing the schedule. |
 | `POST /settings` | Mode-selection form target. |
 | `GET /healthz` | Liveness; always `200` while the process is running. |
 | `GET /readyz` | Readiness: a frame no older than two mode intervals and a writable `data/`. |
-| `GET /status` | JSON snapshot: mode, frame age, readiness, cycle/upstream counters, and last event ages. |
+| `GET /status` | JSON snapshot: mode, frame age, readiness, cycle/upstream counters, last event ages, and the retry schedule (`failures`, `last_attempt`, `next_attempt`, `radar_status`). |
 | `GET /static/style.css` | Stylesheet. |
 
 `/status` exposes `event=cycle` and `event=upstream` log fields as counters and
