@@ -91,9 +91,10 @@ radar-frame view palette --output <png>
 frame it wrote. `clear` fetches the forecast and alerts and renders the
 clear-sky frame; `radar` downloads the latest NEXRAD volume and renders the
 storm frame; `warnings` fetches the alerts and prints them without rendering.
-`--mock` swaps in the built-in forecast and three active sample alerts, so
-`demo clear --mock` and `demo warnings --mock` run without network access.
-`demo radar --mock` still lists and downloads the live NEXRAD volume.
+`--mock` swaps in the built-in forecast, three active sample alerts, and an
+embedded KTLX volume, so `demo clear --mock`, `demo radar --mock`, and
+`demo warnings --mock` run without network access. The mocked radar cycle
+still parses, rasterizes, and composes the frame from real Archive II bytes.
 
 There is no GeoJSON command and no GeoJSON input: the only radar renderer is
 the fused `render archive` (Archive II -> REF frame). `VEL`, `SW`, `ZDR`,
@@ -347,7 +348,7 @@ The lower-level commands render the same pieces without the configured
 
 ```sh
 radar-frame render archive \
-  --archive tests/fixtures/nexrad/ktlx-mini.ar2 -e 1 \
+  --archive assets/ktlx-mini.ar2 -e 1 \
   --min-lon -97.26 --min-lat 35.35 --max-lon -97.21 --max-lat 35.39 \
   --width 800 --height 444 \
   --streets tests/fixtures/frame/ktlx-mini/streets.png \
@@ -405,10 +406,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-- `fixtures/nexrad/ktlx-mini.ar2`: a trimmed real KTLX volume (2,870,734 bytes
-  extracted to 18,972 bytes; the extraction rule is in
-  `fixtures/nexrad/README.md`). It is the only volume fixture the fused
-  renderer and the HTTP storm test need.
+- `assets/ktlx-mini.ar2`: a trimmed real KTLX volume (2,870,734 bytes
+  extracted to 18,972 bytes), embedded in the binary for `demo radar --mock`.
+  It is the only volume fixture the fused renderer and the HTTP storm test
+  need.
 - `fixtures/frame/ktlx-mini`: the GDAL/Pillow golden frame
   (`frame.expected.png`), the GDAL street mask (`streets.png`), and the minimal
   OSM XML that reproduces it. Generated with GDAL 3.10.3, Pillow 11.1.0, and

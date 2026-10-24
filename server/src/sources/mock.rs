@@ -1,10 +1,16 @@
-//! Offline data, ported value for value from `sources/mock_forecast.py`.
+//! Offline data for the mock providers and the demo commands. The forecast is
+//! ported value for value from `sources/mock_forecast.py`; the radar volume is
+//! a trimmed real KTLX archive embedded at build time.
+
+use std::path::Path;
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 
-use super::{AlertSource, Forecast, ForecastSource, RadarStatus, RadarStatusSource};
-use crate::error::Result;
+use super::{
+    AlertSource, Forecast, ForecastSource, RadarObject, RadarSource, RadarStatus, RadarStatusSource,
+};
+use crate::error::{Error, Result};
 use crate::view::forecast::{Alert, AlertLevel, CurrentConditions, ForecastDay, ForecastHour};
 
 pub struct MockProvider {
@@ -190,5 +196,30 @@ impl AlertSource for MockProvider {
 impl RadarStatusSource for MockProvider {
     async fn radar_status(&self) -> Result<RadarStatus> {
         Ok(RadarStatus { up: true, vcp: 31 })
+    }
+}
+
+/// A real but tiny KTLX volume compiled into the binary. It is small enough to
+/// embed and still exercises the full download, parse, and rasterize path.
+const RADAR_VOLUME: &[u8] = include_bytes!("../../assets/ktlx-mini.ar2");
+
+/// Radar data for `demo radar --mock`: no network calls and deterministic
+/// bytes. The synthetic key keeps the printed provenance distinct from S3.
+pub struct MockRadar;
+
+#[async_trait]
+impl RadarSource for MockRadar {
+    async fn latest(&self, nexrad_id: &str, now: DateTime<Utc>) -> Result<Option<RadarObject>> {
+        Ok(Some(RadarObject {
+            key: format!("mock/{nexrad_id}-mini.ar2"),
+            last_modified: now,
+        }))
+    }
+
+    async fn download(&self, _radar_object: &RadarObject, destination: &Path) -> Result<u64> {
+        tokio::fs::write(destination, RADAR_VOLUME)
+            .await
+            .map_err(|error| Error::io_path(destination, &error))?;
+        Ok(RADAR_VOLUME.len() as u64)
     }
 }

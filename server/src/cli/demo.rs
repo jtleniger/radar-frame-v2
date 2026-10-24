@@ -13,6 +13,7 @@ use crate::service::clock::{Clock, SystemClock};
 use crate::service::modes::{self, Services};
 use crate::service::renderer::{FrameRenderer, Renderer};
 use crate::service::setup;
+use crate::sources::mock::MockRadar;
 use crate::sources::nexrad::S3Radar;
 use crate::sources::{RadarSource, Sources};
 use crate::state::{Mode, State};
@@ -33,7 +34,8 @@ pub enum DemoCommand {
 
 #[derive(Args)]
 pub struct DemoArgs {
-    /// Use the built-in mock forecast and alerts instead of upstream data
+    /// Use the built-in mock forecast, alerts, and radar volume instead of
+    /// upstream data
     #[arg(long)]
     mock: bool,
 }
@@ -101,7 +103,11 @@ async fn run_radar(args: DemoArgs) -> Result<()> {
     setup::create_data_dir(&environment.paths)?;
     setup::create_palette(&environment.paths)?;
 
-    let radar: Arc<dyn RadarSource> = Arc::new(S3Radar::new(environment.client.clone()));
+    let radar: Arc<dyn RadarSource> = if args.mock {
+        Arc::new(MockRadar)
+    } else {
+        Arc::new(S3Radar::new(environment.client.clone()))
+    };
     let renderer: Arc<dyn Renderer> =
         Arc::new(FrameRenderer::new(environment.paths.clone(), &settings));
     let now = SystemClock.now();
