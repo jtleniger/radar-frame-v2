@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use crate::error::{Error, Result};
 
-const URL: &str = "https://overpass-api.de/api/interpreter";
+pub const URL: &str = "https://overpass-api.de/api/interpreter";
 
 /// The query from `sources/osm.py` and the README fallback, byte for byte.
 pub fn query(min_lat: &str, min_lon: &str, max_lat: &str, max_lon: &str) -> String {

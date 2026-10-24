@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::view::forecast::{CurrentConditions, ForecastDay, ForecastHour};
 
-const BASE_URL: &str = "https://api.open-meteo.com/v1/forecast";
+pub const BASE_URL: &str = "https://api.open-meteo.com/v1/forecast";
 
 #[derive(Deserialize)]
 struct Response {

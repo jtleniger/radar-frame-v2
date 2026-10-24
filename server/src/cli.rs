@@ -14,6 +14,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::engine::{Engine, Renderer};
 use crate::error::Result;
+use crate::metrics::Metrics;
 use crate::modes::{self, Deps};
 use crate::paths::Paths;
 use crate::setup;
@@ -235,6 +236,36 @@ async fn serve(args: Serve) -> Result<()> {
     setup::create_data_dir(&paths)?;
     setup::create_palette(&paths)?;
 
+    let bbox = format!(
+        "{},{},{},{}",
+        config.get("bbox", "min_lon")?,
+        config.get("bbox", "min_lat")?,
+        config.get("bbox", "max_lon")?,
+        config.get("bbox", "max_lat")?
+    );
+    let zones = format!(
+        "{},{}",
+        config.get_opt("nws", "zone").unwrap_or("-"),
+        config.get_opt("nws", "fire_zone").unwrap_or("-")
+    );
+    tracing::info!(
+        event = "startup",
+        version = env!("CARGO_PKG_VERSION"),
+        bind = %args.bind,
+        station = config.get_opt("radar", "nexrad_id").unwrap_or("-"),
+        bbox = %bbox,
+        timezone = config.get_opt("forecast", "timezone").unwrap_or("-"),
+        zones = %zones,
+        user_agent = config.user_agent(),
+        data = %paths.data_dir().display(),
+        data_writable = setup::data_writable(&paths),
+        endpoint_forecast = crate::sources::open_meteo::BASE_URL,
+        endpoint_nws = crate::sources::nws::BASE_URL,
+        endpoint_radar = crate::sources::nexrad::BASE_URL,
+        endpoint_streets = crate::sources::osm::URL,
+        "startup"
+    );
+
     let client = http_client(&config)?;
     setup::create_streets(&paths, &config, &Overpass::new(client.clone()), false).await?;
 
@@ -325,13 +356,16 @@ async fn render_storm(args: MockArgs) -> Result<()> {
     let provider = provider(&config, &client, args.mock);
 
     let mut state = State::new();
+    let now = SystemClock.now();
+    let metrics = Metrics::new(now);
     let deps = Deps {
         paths: &paths,
         config: &config,
         engine: &engine,
         provider: provider.as_ref(),
         radar: radar.as_ref(),
-        now: SystemClock.now(),
+        metrics: &metrics,
+        now,
     };
     modes::run(crate::state::Mode::Storm, &deps, &mut state)
         .await

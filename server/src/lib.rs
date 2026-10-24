@@ -14,6 +14,7 @@ pub mod engine;
 pub mod error;
 pub mod frame;
 pub mod logging;
+pub mod metrics;
 pub mod modes;
 pub mod nexrad;
 pub mod paths;

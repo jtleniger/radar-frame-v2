@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::Config;
 use crate::constants::{RADAR_HEIGHT, WIDTH};
@@ -18,6 +19,36 @@ pub fn create_data_dir(paths: &Paths) -> Result<()> {
 
     tracing::info!("{} missing, creating it", data.display());
     fs::create_dir(&data).map_err(|e| Error(format!("{}: {e}", data.display())))
+}
+
+/// Write and remove a probe file in `data/`. Used by readiness and the
+/// startup summary so a read-only mount is reported before a cycle fails.
+pub fn data_writable(paths: &Paths) -> bool {
+    static PROBE: AtomicU64 = AtomicU64::new(0);
+
+    let name = format!(
+        ".readyz-{}-{}",
+        std::process::id(),
+        PROBE.fetch_add(1, Ordering::Relaxed)
+    );
+    let path = paths.data_dir().join(name);
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => {
+            drop(file);
+            if let Err(error) = fs::remove_file(&path) {
+                tracing::warn!("{}: {error}", path.display());
+            }
+            true
+        }
+        Err(error) => {
+            tracing::debug!("{}: {error}", path.display());
+            false
+        }
+    }
 }
 
 /// Write the seven-colour palette PNG. `setup/palette.py` ran the `frame-view

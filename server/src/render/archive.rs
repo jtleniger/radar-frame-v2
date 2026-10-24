@@ -39,9 +39,17 @@ pub struct Options {
     pub output: PathBuf,
 }
 
+/// What the renderer actually composited, for the cycle provenance log.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Summary {
+    pub elevations: Vec<u8>,
+    pub radials: usize,
+    pub gates: usize,
+}
+
 /// Rasterize the selected elevations straight from the volume, max-composite
 /// them, colorize, overlay streets.
-pub fn render_archive(options: &Options) -> Result<()> {
+pub fn render_archive(options: &Options) -> Result<Summary> {
     let (transform, streets, table) = render::load_frame(
         &render::Bounds {
             min_lon: options.min_lon,
@@ -77,6 +85,7 @@ pub fn render_archive(options: &Options) -> Result<()> {
 
     let mut composite = vec![0u8; options.width * options.height];
     let mut pixel_ring = Vec::with_capacity(5);
+    let mut summary = Summary::default();
     for &elevation in &options.elevations {
         let scan = volume.scans.get(&elevation).ok_or_else(|| {
             Error(format!(
@@ -84,6 +93,9 @@ pub fn render_archive(options: &Options) -> Result<()> {
                 options.archive.display()
             ))
         })?;
+
+        summary.elevations.push(elevation);
+        summary.radials += scan.len();
 
         let mut grid = vec![0u8; options.width * options.height];
         for radial in scan {
@@ -95,6 +107,7 @@ pub fn render_archive(options: &Options) -> Result<()> {
                 options.maximum,
             )
             .map_err(|e| Error(format!("{}: {e}", options.archive.display())))?;
+            summary.gates += bins.len();
             for bin in bins {
                 rasterize_bin(
                     &mut grid,
@@ -117,7 +130,8 @@ pub fn render_archive(options: &Options) -> Result<()> {
         options.width,
         options.height,
         &options.output,
-    )
+    )?;
+    Ok(summary)
 }
 
 /// One gate as a single-ring polygon, with the precision of the pre-fusion

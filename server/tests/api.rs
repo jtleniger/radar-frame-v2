@@ -163,11 +163,19 @@ struct TestRenderer {
 }
 
 impl Renderer for TestRenderer {
-    fn render_radar(&self, _volume: &Path, _minimum: f64) -> radar_frame::error::Result<()> {
+    fn render_radar(
+        &self,
+        _volume: &Path,
+        _minimum: f64,
+    ) -> radar_frame::error::Result<radar_frame::render::archive::Summary> {
         // Radar rasterization is covered by frame-render's own goldens; this
         // fixture volume only carries elevation 1.
         std::fs::copy(&self.radar_png, &self.radar_out)?;
-        Ok(())
+        Ok(radar_frame::render::archive::Summary {
+            elevations: vec![1],
+            radials: 1,
+            gates: 1,
+        })
     }
 
     fn render_storm(
@@ -513,6 +521,82 @@ async fn settings_rejects_unknown_values() {
 }
 
 #[tokio::test]
+async fn operational_endpoints_report_frame_and_counters() {
+    let fixture = Fixture::new();
+    let (router, state) = app(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/healthz").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await, b"ok\n");
+
+    let response = get(&router, "/readyz").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = get(&router, "/readyz").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await, b"ready\n");
+
+    let response = get(&router, "/status").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    let status: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+
+    assert_eq!(status["mode"], "Clear");
+    assert_eq!(status["ready"], true);
+    assert_eq!(status["data_writable"], true);
+    assert_eq!(status["frame"]["available"], true);
+    assert!(status["frame"]["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(status["counters"]["cycles_total"], 1);
+    assert_eq!(status["counters"]["cycles_failed"], 0);
+    assert!(status["counters"]["upstream_total"].as_u64().unwrap() >= 3);
+    assert_eq!(status["last_cycle"]["outcome"], "ok");
+    assert_eq!(state.metrics.requests_total(), 5);
+}
+
+#[tokio::test]
+async fn readiness_rejects_a_stale_frame() {
+    let fixture = Fixture::new();
+    let (router, state) = app(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+    );
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let frame = state.state.lock().await.frame.clone().unwrap();
+    let stale = radar_frame::frame::PublishedFrame::new(
+        frame.bytes.to_vec(),
+        now() - chrono::Duration::minutes(61),
+        Some(Mode::Clear),
+        None,
+    )
+    .unwrap();
+    state.state.lock().await.frame = Some(Arc::new(stale));
+
+    let response = get(&router, "/readyz").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(String::from_utf8(body_bytes(response).await)
+        .unwrap()
+        .contains("frame is stale"));
+
+    let response = get(&router, "/status").await;
+    let status: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(status["ready"], false);
+    assert_eq!(status["ready_reason"], "frame is stale");
+}
+
+#[tokio::test]
 async fn stylesheet_is_served() {
     let fixture = Fixture::new();
     let (router, _) = app(
@@ -632,6 +716,12 @@ async fn first_cycle_failure_returns_503() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[header::RETRY_AFTER], "60");
     assert!(state.state.lock().await.frame.is_none());
+    assert_eq!(state.metrics.cycles_total(), 1);
+    assert_eq!(state.metrics.cycles_failed(), 1);
+    assert_eq!(
+        state.metrics.last_cycle().unwrap().outcome,
+        radar_frame::metrics::Outcome::Failed
+    );
 }
 
 #[tokio::test]

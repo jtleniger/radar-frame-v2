@@ -175,6 +175,38 @@ fn fused_frame_matches_the_gdal_golden() {
     assert_eq!(entries, vec!["frame.png"], "wrote an intermediate");
 }
 
+/// The renderer reports the elevations and counts it actually composited.
+#[test]
+fn archive_summary_reports_elevations_and_counts() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frame/ktlx-mini");
+    let archive = Path::new(MINI_ARCHIVE);
+    let streets = fixtures.join("streets.png");
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("frame.png");
+
+    let summary =
+        radar_frame::render::archive::render_archive(&radar_frame::render::archive::Options {
+            min_lon: -97.26,
+            min_lat: 35.35,
+            max_lon: -97.21,
+            max_lat: 35.39,
+            width: 800,
+            height: 444,
+            archive: archive.to_path_buf(),
+            elevations: vec![1],
+            minimum: Some(10.0),
+            maximum: None,
+            colors: None,
+            streets,
+            output,
+        })
+        .unwrap();
+
+    assert_eq!(summary.elevations, vec![1]);
+    assert!(summary.radials > 0, "no radials counted");
+    assert!(summary.gates > 0, "no gates counted");
+}
+
 /// The frame path needs every selected elevation; a missing elevation is fatal.
 #[test]
 fn fused_frame_refuses_missing_elevations() {

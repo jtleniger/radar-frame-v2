@@ -27,7 +27,7 @@ pub struct Bounds {
 /// Rendering is a trait so the HTTP layer can be tested without a full
 /// three-elevation volume; production always uses [`Engine`].
 pub trait Renderer: Send + Sync {
-    fn render_radar(&self, volume: &Path, minimum: f64) -> Result<()>;
+    fn render_radar(&self, volume: &Path, minimum: f64) -> Result<crate::render::archive::Summary>;
     fn render_storm(&self, alerts: &[Alert], now: DateTime<Utc>) -> Result<()>;
     fn render_clear(&self, forecast: &Forecast, alerts: &[Alert], now: DateTime<Utc>)
         -> Result<()>;
@@ -63,23 +63,28 @@ impl Engine {
 
     /// Rasterize the local Archive II volume to `data/nexrad-latest.png`.
     /// `components/radar/render.py` ran `frame-render frame` for this.
-    pub fn render_radar(&self, volume: &Path, minimum: f64) -> Result<()> {
-        crate::render::archive::render_archive(&crate::render::archive::Options {
-            min_lon: self.bounds.min_lon,
-            min_lat: self.bounds.min_lat,
-            max_lon: self.bounds.max_lon,
-            max_lat: self.bounds.max_lat,
-            width: WIDTH,
-            height: RADAR_HEIGHT,
-            archive: volume.to_path_buf(),
-            elevations: vec![1, 2, 3],
-            minimum: Some(minimum as f32),
-            maximum: None,
-            colors: self.colors.clone(),
-            streets: self.paths.streets_img(),
-            output: self.paths.radar_img(),
-        })?;
-        Ok(())
+    pub fn render_radar(
+        &self,
+        volume: &Path,
+        minimum: f64,
+    ) -> Result<crate::render::archive::Summary> {
+        Ok(crate::render::archive::render_archive(
+            &crate::render::archive::Options {
+                min_lon: self.bounds.min_lon,
+                min_lat: self.bounds.min_lat,
+                max_lon: self.bounds.max_lon,
+                max_lat: self.bounds.max_lat,
+                width: WIDTH,
+                height: RADAR_HEIGHT,
+                archive: volume.to_path_buf(),
+                elevations: vec![1, 2, 3],
+                minimum: Some(minimum as f32),
+                maximum: None,
+                colors: self.colors.clone(),
+                streets: self.paths.streets_img(),
+                output: self.paths.radar_img(),
+            },
+        )?)
     }
 
     /// Radar frame plus info bar, dithered to the palette.
@@ -107,7 +112,7 @@ impl Engine {
 }
 
 impl Renderer for Engine {
-    fn render_radar(&self, volume: &Path, minimum: f64) -> Result<()> {
+    fn render_radar(&self, volume: &Path, minimum: f64) -> Result<crate::render::archive::Summary> {
         Engine::render_radar(self, volume, minimum)
     }
 

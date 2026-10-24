@@ -84,6 +84,21 @@ There is no GeoJSON command and no GeoJSON input: the only radar renderer is
 the fused `render archive` (Archive II -> REF frame). `VEL`, `SW`, `ZDR`,
 `PHI`, and `RHO` output is not produced.
 
+## Endpoints
+
+| Path | Purpose |
+|---|---|
+| `GET /frame` | Current e-ink frame; `304` until the next cycle is due. |
+| `GET /frame?debug=true` | Last published frame, bypassing the schedule. |
+| `POST /settings` | Mode-selection form target. |
+| `GET /healthz` | Liveness; always `200` while the process is running. |
+| `GET /readyz` | Readiness: a frame no older than two mode intervals and a writable `data/`. |
+| `GET /status` | JSON snapshot: mode, frame age, readiness, cycle/upstream counters, and last event ages. |
+| `GET /static/style.css` | Stylesheet. |
+
+`/status` exposes `event=cycle` and `event=upstream` log fields as counters and
+ages, so an external probe does not have to parse the log.
+
 | Before | After |
 |---|---|
 | `frame-render frame` | `radar-frame render archive` |
