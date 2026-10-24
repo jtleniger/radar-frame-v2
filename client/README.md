@@ -50,9 +50,8 @@ use_noop = false
 ```
 
 `base_url` may include a path prefix; a missing trailing slash is added. Use an
-IP address or a name in `/etc/hosts`: the static musl binary does not load
-glibc NSS modules, so Avahi `.local` names will not resolve. Normal DNS through
-`/etc/resolv.conf` and `/etc/hosts` works.
+IP address, a normal DNS name, or an Avahi `.local` name. The latter needs
+`libnss-mdns` and `avahi-daemon` on the Pi; see the build section.
 Relative `file` paths resolve from the working directory. Logs rotate at 100 kB
 with four backups, or go to stderr if the file cannot be opened.
 
@@ -64,69 +63,52 @@ Flags:
 
 ## Build
 
-The display Pi runs Debian 11 (glibc 2.31). Do **not** copy a binary built
-against the build host's newer glibc: build a static musl binary instead. A
-static binary has no glibc dependency and runs on Debian 11 and later. If you
-need Avahi `.local` names, use the glibc 2.31 build described below instead;
-musl cannot load Avahi's NSS module.
+The display Pi runs Debian 11 with glibc 2.31. Build a dynamically linked
+binary against that exact glibc — not the build host's newer one. Dynamic
+linking is required for Avahi: glibc loads `libnss_mdns.so` through NSS when
+resolving `.local` names.
 
-### Cross-compile with cargo-zigbuild (recommended)
-
-On any recent x86_64 Linux host:
+Cross-compile with `cargo-zigbuild`; the `.2.31` target suffix pins the glibc
+symbol version:
 
 ```sh
-rustup target add aarch64-unknown-linux-musl        # 64-bit Raspberry Pi OS
 cargo install cargo-zigbuild
 # Install Zig first: https://ziglang.org/download/ (0.13 or newer).
 
-cargo zigbuild --release --manifest-path client/Cargo.toml \
-  --target aarch64-unknown-linux-musl
-```
-
-For a 32-bit Raspberry Pi OS, pick the target from `uname -m` on the Pi:
-
-- `armv7l` (Pi 2, Pi 3/4/5 running a 32-bit OS): `armv7-unknown-linux-musleabihf`
-- `armv6l` (Pi 1 Model A/A+/B/B+, Pi Zero, Pi Zero W):
-  `arm-unknown-linux-musleabihf`
-
-```sh
-# ARMv7, 32-bit
-rustup target add armv7-unknown-linux-musleabihf
-cargo zigbuild --release --manifest-path client/Cargo.toml \
-  --target armv7-unknown-linux-musleabihf
-
-# ARMv6, 32-bit (original Pi 1 and Pi Zero)
-rustup target add arm-unknown-linux-musleabihf
-cargo zigbuild --release --manifest-path client/Cargo.toml \
-  --target arm-unknown-linux-musleabihf
-```
-
-An ARMv7 binary will crash with an illegal instruction on an ARMv6 Pi, so
-verify the artifact with `readelf -A`: the ARMv6 build reports
-`Tag_CPU_arch: v6` and `Tag_FP_arch: VFPv2`.
-
-### Avahi / `.local` hostnames
-
-A static musl binary cannot load glibc NSS modules, so `libnss-mdns` cannot
-resolve `radar-frame.local` for it. If you want Avahi names and the server's IP
-may change, build the dynamically linked glibc binary instead. Target glibc
-2.31 explicitly so it runs on Debian 11:
-
-```sh
+# ARMv6, 32-bit (Pi 1 Model A/A+/B/B+, Pi Zero):
 rustup target add arm-unknown-linux-gnueabihf
 cargo zigbuild --release --manifest-path client/Cargo.toml \
   --target arm-unknown-linux-gnueabihf.2.31
 ```
 
-The output is
-`client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client` (note:
-not the `musleabihf` directory). Verify that no symbol requires a newer glibc:
+Other Raspberry Pi targets, with the same `.2.31` suffix:
+
+- `armv7l`, 32-bit: `armv7-unknown-linux-gnueabihf.2.31`
+- `aarch64`, 64-bit: `aarch64-unknown-linux-gnu.2.31`
+
+The artifact lands in
+`client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client` for the
+ARMv6 build. Verify it:
 
 ```sh
+file client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client
+# ... dynamically linked, interpreter /lib/ld-linux-armhf.so.3 ...
+
+readelf -A client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client \
+  | grep Tag_CPU_arch
+# Tag_CPU_arch: v6
+
 readelf -V client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client \
   | grep -o 'GLIBC_[0-9.]*' | sort -V | tail
 # highest line must be GLIBC_2.31 or lower
 ```
+
+Do not use the unversioned `arm-unknown-linux-gnueabihf` target: it links
+against the build host's glibc. The architecture check matters in the other
+direction too: an ARMv7 binary traps on an ARMv6 Pi, so confirm
+`Tag_CPU_arch: v6` when deploying to a Pi 1 or Pi Zero.
+
+### Avahi / `.local` hostnames
 
 On the Pi, install and check NSS mDNS:
 
@@ -138,45 +120,16 @@ grep '^hosts:' /etc/nsswitch.conf
 getent hosts radar-frame.local
 ```
 
-The dynamically linked build still has no OpenSSL dependency; TLS is rustls.
-Use the musl build if you do not need `.local` names and prefer a self-contained
-binary.
-
-### Cross-compile with cross (Docker)
-
-```sh
-rustup target add aarch64-unknown-linux-musl
-cargo install cross
-cross build --release --manifest-path client/Cargo.toml \
-  --target aarch64-unknown-linux-musl
-```
+Then set `base_url = http://radar-frame.local:8000/`. The binary still has no
+OpenSSL dependency; TLS is rustls.
 
 ### Native build
 
-On a modern Linux host, a normal build works for development:
+A normal host build is fine for `--noop` smoke tests, but it links against the
+host glibc and must not be deployed to Bullseye:
 
 ```sh
 cargo build --manifest-path client/Cargo.toml --release
-```
-
-The resulting binary is dynamically linked and may not run on the Pi's older
-glibc. Use it for `--noop` smoke tests on the build host, not for deployment.
-
-Verify the deployed artifact:
-
-```sh
-# Static musl build:
-file client/target/aarch64-unknown-linux-musl/release/radar-frame-client
-# ... statically linked ...
-ldd client/target/aarch64-unknown-linux-musl/release/radar-frame-client
-# not a dynamic executable
-
-# Avahi/glibc build:
-file client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client
-# ... dynamically linked, interpreter /lib/ld-linux-armhf.so.3 ...
-readelf -V client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client \
-  | grep -o 'GLIBC_[0-9.]*' | sort -V | tail
-# highest line must be GLIBC_2.31 or lower
 ```
 
 ## Install on the Pi
@@ -190,9 +143,7 @@ sudo raspi-config nonint do_spi 0
 sudo usermod -aG spi,gpio pi
 # Log out and back in so the group change applies.
 
-# From the build host, choose the artifact you built:
-#   Avahi/glibc 2.31: client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client
-#   static musl:      client/target/arm-unknown-linux-musleabihf/release/radar-frame-client
+# From the build host:
 BINARY=client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client
 
 ssh pi@radar-frame-client 'mkdir -p ~/radar-frame-client/config'

@@ -8,8 +8,8 @@ II parser are all linked into `target/release/radar-frame`.
 
 The client (`client/`) is a Rust service for the Raspberry Pi. It polls this
 server, uses the same conditional `/frame` contract, and drives the Waveshare
-7.3-inch panel through `epd-waveshare`. See `client/README.md` for the static
-musl build used on Debian 11.
+7.3-inch panel through `epd-waveshare`. See `client/README.md` for the glibc
+2.31 build used on Debian 11 and the Avahi `.local` setup.
 
 ## Layout
 
