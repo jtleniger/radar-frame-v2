@@ -51,8 +51,8 @@ server/
 ```
 
 Runtime paths stay relative to the working directory: `config/config.ini`,
-`data/`, and `radar-frame.log`. `config/config.ini`, `data/`, and the log are
-gitignored. The only build directory is `target/`.
+`data/`, `photos/`, and `radar-frame.log`. `config/config.ini`, `data/`,
+`photos/`, and the log are gitignored. The only build directory is `target/`.
 
 ## Build
 
@@ -133,6 +133,19 @@ or rendering.
 - `/`, `/readyz`, and `/status` answer from the snapshot alone. `/settings` is
   applied by the updater (serialized with any cycle in flight) so the returned
   page reflects the new state.
+
+### Photo mode
+
+Photo is manual-only: the radar status never selects it, so choose it under
+Manual on the home page. Each cycle shows the next `.png` in `photos/` (relative
+to the working directory), ordered by file name, for 10 minutes, and wraps
+after the last one. Files are expected to be cropped to 800x480 and are dithered
+to the seven-colour e-ink palette with Floyd–Steinberg; a differently sized or
+undecodable file is skipped with a warning and the next candidate is tried. If
+`photos/` is missing, empty, or contains no usable file, the cycle fails and the
+last good frame stays up. The last shown file name is persisted, so a restart
+continues the rotation instead of repeating the first image. Manual selection,
+including Photo, expires after one day and returns to radar-driven Auto.
 
 | Before | After |
 |---|---|
@@ -227,6 +240,7 @@ The installed layout is flat under the service user's home:
   bin/radar-frame
   config/config.ini
   data/
+  photos/
   radar-frame.log
 ```
 
@@ -280,7 +294,7 @@ contract:
 
 - `GET /frame?debug=true` returns `data/frame.png`;
 - `GET /frame` returns 304 until the mode's interval elapses (10 minutes in
-  Storm, 30 in Clear), then renders and returns the image;
+  Storm and Photo, 30 in Clear), then renders and returns the image;
 - manual selection expires one day after it is chosen;
 - auto selection re-reads the NWS radar station on each `/frame` request and
   switches to Clear when the radar is down, the VCP is unknown, or the VCP is
@@ -289,10 +303,10 @@ contract:
   Operate/Standby station cannot force a render on every poll. The first
   sample after startup establishes the mode immediately.
 
-The mode selection, schedule, and radar volume key/mtime are persisted in
-`data/state.json` (written atomically). A restart resumes the same schedule
-and manual selection, and reuses the volume already in `data/` instead of
-downloading it again. A missing or unreadable state file starts fresh.
+The mode selection, schedule, radar volume key/mtime, and last photo name are
+persisted in `data/state.json` (written atomically). A restart resumes the same
+schedule and manual selection, and reuses the volume already in `data/` instead
+of downloading it again. A missing or unreadable state file starts fresh.
 
 Network use:
 

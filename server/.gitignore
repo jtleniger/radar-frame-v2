@@ -1,5 +1,6 @@
 config/config.ini
 data/
+photos/
 radar-frame.log
 radar-frame.log.*
 /target/
