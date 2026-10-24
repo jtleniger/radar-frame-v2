@@ -133,14 +133,14 @@ ID form: `<category>.<finding>.<action>`.
 | [rejected] | ~~6.1.1~~ | ~~Cache palette and icons~~ |
 | [x] | 6.2.1 | Publish in-memory frame bytes + ETag |
 | [x] | 6.3.1 | Collapse `Renderer`/single `Settings` |
-| [ ] | 7.1.1 | Background updater + immutable snapshot |
-| [ ] | 7.1.2 | Interim no-lock-across-await / single-flight |
+| [x] | 7.1.1 | Background updater + immutable snapshot |
+| [x] | 7.1.2 | Interim no-lock-across-await / single-flight (superseded by 7.1.1) |
 | [x] | 7.2.1 | Upstream and handler timeouts |
 | [x] | 7.2.2 | Graceful shutdown + panic hook |
 | [ ] | 7.3.1 | Typed errors + HTTP mapping |
 | [x] | 7.4.1 | Startup validation |
 | [x] | 7.5.1 | systemd hardening |
-| [ ] | 7.6.1 | Add regression tests |
+| [x] | 7.6.1 | Add regression tests |
 
 ## Details
 

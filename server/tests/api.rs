@@ -290,6 +290,50 @@ impl RadarStatusSource for FlappingProvider {
     }
 }
 
+/// Provider that parks the first Clear cycle until the test releases it, so
+/// read endpoints can be exercised while an update is in flight.
+struct GateProvider {
+    forecast: Forecast,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    forecast_calls: AtomicUsize,
+}
+
+impl GateProvider {
+    fn new() -> Self {
+        GateProvider {
+            forecast: MockProvider::new().forecast_data().clone(),
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            forecast_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ForecastSource for GateProvider {
+    async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
+        self.forecast_calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(self.forecast.clone())
+    }
+}
+
+#[async_trait]
+impl AlertSource for GateProvider {
+    async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl RadarStatusSource for GateProvider {
+    async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
+        Ok(RadarStatus { up: true, vcp: 31 })
+    }
+}
+
 /// Real clear/storm views with a switch for failing the clear render.
 struct ToggleRenderer {
     engine: Engine,
@@ -383,6 +427,48 @@ impl Renderer for TestRenderer {
         now: DateTime<Utc>,
     ) -> radar_frame::error::Result<()> {
         self.engine.render_clear(forecast, alerts, now)
+    }
+}
+
+/// Publishes fixed bytes regardless of the clock, so a second cycle produces
+/// the same ETag and the `If-None-Match` path is observable.
+struct StaticRenderer {
+    output: PathBuf,
+    png: PathBuf,
+}
+
+impl Renderer for StaticRenderer {
+    fn render_radar(
+        &self,
+        _volume: &Path,
+        _minimum: f64,
+        output: &Path,
+    ) -> radar_frame::error::Result<radar_frame::render::archive::Summary> {
+        std::fs::copy(&self.png, output)?;
+        Ok(radar_frame::render::archive::Summary {
+            elevations: vec![1],
+            radials: 1,
+            gates: 1,
+        })
+    }
+
+    fn render_storm(
+        &self,
+        _alerts: &[radar_frame::view::forecast::Alert],
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        std::fs::copy(&self.png, &self.output)?;
+        Ok(())
+    }
+
+    fn render_clear(
+        &self,
+        _forecast: &Forecast,
+        _alerts: &[radar_frame::view::forecast::Alert],
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        std::fs::copy(&self.png, &self.output)?;
+        Ok(())
     }
 }
 
@@ -660,9 +746,9 @@ async fn clear_frame_matches_flask_and_returns_304_until_due() {
     assert_matches_png(&body_bytes(response).await, &golden("clear-frame.png"));
 
     {
-        let state = state.state.lock().await;
-        assert_eq!(state.mode, Mode::Clear);
-        assert_eq!(state.last_updated, now());
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.state.mode, Mode::Clear);
+        assert_eq!(snapshot.state.last_updated, now());
     }
 
     let response = get(&router, "/frame").await;
@@ -705,13 +791,13 @@ async fn storm_frame_matches_flask() {
 
     assert_eq!(downloads.load(Ordering::SeqCst), 1);
     {
-        let state = state.state.lock().await;
-        assert_eq!(state.mode, Mode::Storm);
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.state.mode, Mode::Storm);
         assert_eq!(
-            state.radar_last_updated,
+            snapshot.state.radar_last_updated,
             now() - chrono::Duration::minutes(30)
         );
-        assert_eq!(state.last_updated, now());
+        assert_eq!(snapshot.state.last_updated, now());
     }
 
     let response = get(&router, "/frame").await;
@@ -721,29 +807,33 @@ async fn storm_frame_matches_flask() {
 #[tokio::test]
 async fn manual_mode_expires_back_to_auto() {
     let fixture = Fixture::new();
-    let (router, state) = app(
+    let clock = Arc::new(TestClock::new(now()));
+    let (router, state) = app_with_clock(
         &fixture,
         Arc::new(MockProvider::new()),
         Arc::new(FakeRadar::default()),
         real_renderer(&fixture),
+        clock.clone(),
     );
 
-    {
-        let mut state = state.state.lock().await;
-        state.mode_select = ModeSelect::Manual;
-        state.mode = Mode::Clear;
-        state.manual_til = Some(now() - chrono::Duration::minutes(1));
-        state.last_updated = now();
-        state.next_attempt = now() + Mode::Clear.interval();
-    }
+    // Publish a frame so the next poll is scheduled, then select Manual
+    // without changing the mode.
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(
+        post_form(&router, "/settings", "mode-select=Manual")
+            .await
+            .status(),
+        StatusCode::OK
+    );
 
-    let response = get(&router, "/frame").await;
-    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    clock.advance(chrono::Duration::days(1) + chrono::Duration::seconds(1));
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
 
     // Python expires the selection but leaves the stale timestamp in place.
-    let state = state.state.lock().await;
-    assert_eq!(state.mode_select, ModeSelect::Auto);
-    assert!(state.manual_til.is_some());
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.state.mode_select, ModeSelect::Auto);
+    assert!(snapshot.state.manual_til.is_some());
+    assert_eq!(snapshot.state.mode, Mode::Clear);
 }
 
 #[tokio::test]
@@ -812,25 +902,20 @@ async fn operational_endpoints_report_frame_and_counters() {
 #[tokio::test]
 async fn readiness_rejects_a_stale_frame() {
     let fixture = Fixture::new();
-    let (router, state) = app(
+    let clock = Arc::new(TestClock::new(now()));
+    let (router, _) = app_with_clock(
         &fixture,
         Arc::new(MockProvider::new()),
         Arc::new(FakeRadar::default()),
         real_renderer(&fixture),
+        clock.clone(),
     );
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let frame = state.state.lock().await.frame.clone().unwrap();
-    let stale = radar_frame::frame::PublishedFrame::new(
-        frame.bytes.to_vec(),
-        now() - chrono::Duration::minutes(61),
-        Some(Mode::Clear),
-        None,
-    )
-    .unwrap();
-    state.state.lock().await.frame = Some(Arc::new(stale));
+    // A Clear frame is ready for two 30-minute intervals.
+    clock.advance(Mode::Clear.interval() * 2 + chrono::Duration::seconds(1));
 
     let response = get(&router, "/readyz").await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -869,28 +954,32 @@ async fn stylesheet_is_served() {
 #[tokio::test]
 async fn radar_status_failure_keeps_the_last_mode() {
     let fixture = Fixture::new();
-    let provider = Arc::new(FlakyProvider::new());
-    provider.fail_status.store(true, Ordering::SeqCst);
+    let clock = Arc::new(TestClock::new(now()));
+    let mut provider = CountingProvider::new();
+    provider.status = RadarStatus { up: true, vcp: 212 };
+    let provider = Arc::new(provider);
+    let renderer = Arc::new(ToggleRenderer::new(&fixture, golden("debug-frame.png")));
 
-    let (router, state) = app(
+    let (router, state) = app_with_clock(
         &fixture,
-        provider,
+        Arc::clone(&provider),
         Arc::new(FakeRadar::default()),
-        real_renderer(&fixture),
+        Arc::clone(&renderer) as Arc<dyn Renderer>,
+        clock.clone(),
     );
 
-    {
-        let mut state = state.state.lock().await;
-        state.mode = Mode::Storm;
-        state.last_updated = now();
-        state.next_attempt = now() + Mode::Storm.interval();
-    }
+    // The first sample establishes Storm mode and publishes a frame.
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(state.snapshot().state.mode, Mode::Storm);
 
-    let response = get(&router, "/frame").await;
-    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    provider.fail_status.store(true, Ordering::SeqCst);
+    clock.advance(chrono::Duration::seconds(61));
 
-    let state = state.state.lock().await;
-    assert_eq!(state.mode, Mode::Storm);
+    assert_eq!(
+        get(&router, "/frame").await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(state.snapshot().state.mode, Mode::Storm);
 }
 
 #[tokio::test]
@@ -910,8 +999,12 @@ async fn alert_failure_publishes_a_degraded_frame() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_matches_png(&body_bytes(response).await, &golden("clear-frame.png"));
 
-    let state = state.state.lock().await;
-    let frame = state.frame.as_ref().expect("degraded frame is published");
+    let snapshot = state.snapshot();
+    let frame = snapshot
+        .state
+        .frame
+        .as_ref()
+        .expect("degraded frame is published");
     assert!(frame
         .degraded
         .as_deref()
@@ -921,37 +1014,34 @@ async fn alert_failure_publishes_a_degraded_frame() {
 #[tokio::test]
 async fn failed_cycle_serves_the_last_good_frame() {
     let fixture = Fixture::new();
-    let provider = Arc::new(FlakyProvider::new());
+    let clock = Arc::new(TestClock::new(now()));
+    let renderer = Arc::new(ToggleRenderer::new(&fixture, golden("debug-frame.png")));
 
-    let (router, state) = app(
+    let (router, state) = app_with_clock(
         &fixture,
-        Arc::clone(&provider),
+        Arc::new(MockProvider::new()),
         Arc::new(FakeRadar::default()),
-        real_renderer(&fixture),
+        Arc::clone(&renderer) as Arc<dyn Renderer>,
+        clock.clone(),
     );
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
     let etag = response.headers()[header::ETAG].clone();
     let first = body_bytes(response).await;
+    let last_updated = state.snapshot().state.last_updated;
 
-    // Fail the next cycle and make it due immediately. Clearing the caches
-    // makes the upstream failure fatal instead of serving last-good data.
-    provider.fail_forecast.store(true, Ordering::SeqCst);
-    {
-        let mut state = state.state.lock().await;
-        state.forecast = None;
-        state.alerts = None;
-        state.reschedule_now();
-    }
+    // Fail the next cycle and make it due.
+    renderer.fail_clear.store(true, Ordering::SeqCst);
+    clock.advance(Mode::Clear.interval());
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[header::ETAG], etag);
     assert_eq!(body_bytes(response).await, first);
 
-    let state = state.state.lock().await;
-    assert_eq!(state.last_updated, DateTime::UNIX_EPOCH);
+    // A failed cycle must not advance the published timestamp.
+    assert_eq!(state.snapshot().state.last_updated, last_updated);
 }
 
 #[tokio::test]
@@ -970,7 +1060,7 @@ async fn first_cycle_failure_returns_503() {
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[header::RETRY_AFTER], "60");
-    assert!(state.state.lock().await.frame.is_none());
+    assert!(state.snapshot().state.frame.is_none());
     assert_eq!(state.metrics.cycles_total(), 1);
     assert_eq!(state.metrics.cycles_failed(), 1);
     assert_eq!(
@@ -982,18 +1072,23 @@ async fn first_cycle_failure_returns_503() {
 #[tokio::test]
 async fn matching_if_none_match_returns_304() {
     let fixture = Fixture::new();
-    let (router, state) = app(
+    let clock = Arc::new(TestClock::new(now()));
+    let (router, _) = app_with_clock(
         &fixture,
         Arc::new(MockProvider::new()),
         Arc::new(FakeRadar::default()),
-        real_renderer(&fixture),
+        Arc::new(StaticRenderer {
+            output: fixture.paths.output_img(),
+            png: golden("debug-frame.png"),
+        }),
+        clock.clone(),
     );
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
     let etag = response.headers()[header::ETAG].clone();
 
-    state.state.lock().await.reschedule_now();
+    clock.advance(Mode::Clear.interval());
 
     let mut headers = HeaderMap::new();
     headers.insert(header::IF_NONE_MATCH, etag);
@@ -1001,7 +1096,7 @@ async fn matching_if_none_match_returns_304() {
     assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
     assert!(body_bytes(response).await.is_empty());
 
-    state.state.lock().await.reschedule_now();
+    clock.advance(Mode::Clear.interval());
     let mut headers = HeaderMap::new();
     headers.insert(header::IF_NONE_MATCH, "\"not-the-tag\"".parse().unwrap());
     let response = get_with_headers(&router, "/frame", headers).await;
@@ -1089,9 +1184,74 @@ async fn radar_status_is_cached_for_a_minute_and_single_flight() {
     );
     assert_eq!(provider.status_calls.load(Ordering::SeqCst), 2);
 
-    let state = state.state.lock().await;
-    assert_eq!(state.radar_status, Some(RadarStatus { up: true, vcp: 31 }));
-    assert_eq!(state.failures, 0);
+    let snapshot = state.snapshot();
+    assert_eq!(
+        snapshot.state.radar_status,
+        Some(RadarStatus { up: true, vcp: 31 })
+    );
+    assert_eq!(snapshot.state.failures, 0);
+}
+
+#[tokio::test]
+async fn concurrent_polls_run_one_cycle_and_do_not_block_reads() {
+    let fixture = Fixture::new();
+    let provider = Arc::new(GateProvider::new());
+    let renderer = Arc::new(ToggleRenderer::new(&fixture, golden("debug-frame.png")));
+    let (router, state) = app(
+        &fixture,
+        Arc::clone(&provider),
+        Arc::new(FakeRadar::default()),
+        Arc::clone(&renderer) as Arc<dyn Renderer>,
+    );
+
+    // Four polls arrive together, as they do when several clients or retries
+    // hit the server at once.
+    let mut polls = Vec::new();
+    for _ in 0..4 {
+        let router = router.clone();
+        polls.push(tokio::spawn(async move {
+            get(&router, "/frame").await.status()
+        }));
+    }
+
+    // The cycle is now parked inside the forecast call.
+    provider.started.notified().await;
+
+    // Read endpoints answer from the snapshot while the cycle holds no lock.
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), get(&router, "/"))
+        .await
+        .expect("the index must not wait for the cycle");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), get(&router, "/status"))
+        .await
+        .expect("status must not wait for the cycle");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    provider.release.notify_one();
+
+    let mut statuses = Vec::new();
+    for poll in polls {
+        statuses.push(poll.await.unwrap());
+    }
+    assert_eq!(
+        statuses.iter().filter(|s| **s == StatusCode::OK).count(),
+        1,
+        "exactly one poll runs the cycle: {statuses:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|s| **s == StatusCode::NOT_MODIFIED)
+            .count(),
+        3,
+        "the rest keep the published frame: {statuses:?}"
+    );
+
+    // The queue of polls can only serialize decisions, never duplicate the
+    // upstream call or the render.
+    assert_eq!(provider.forecast_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.snapshot().state.last_updated, now());
 }
 
 #[tokio::test]
@@ -1125,9 +1285,12 @@ async fn radar_status_failure_is_not_retried_until_the_ttl_expires() {
     );
     assert_eq!(provider.status_calls.load(Ordering::SeqCst), 2);
 
-    let state = state.state.lock().await;
-    assert_eq!(state.radar_status, Some(RadarStatus { up: true, vcp: 31 }));
-    assert_eq!(state.mode, Mode::Clear);
+    let snapshot = state.snapshot();
+    assert_eq!(
+        snapshot.state.radar_status,
+        Some(RadarStatus { up: true, vcp: 31 })
+    );
+    assert_eq!(snapshot.state.mode, Mode::Clear);
 }
 
 #[tokio::test]
@@ -1149,7 +1312,7 @@ async fn failed_cycle_backs_off_and_keeps_serving_the_last_good_frame() {
     assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 1);
 
     renderer.fail_clear.store(true, Ordering::SeqCst);
-    state.state.lock().await.reschedule_now();
+    clock.advance(Mode::Clear.interval());
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1157,8 +1320,8 @@ async fn failed_cycle_backs_off_and_keeps_serving_the_last_good_frame() {
     assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 2);
 
     let (next_attempt, failures) = {
-        let state = state.state.lock().await;
-        (state.next_attempt, state.failures)
+        let snapshot = state.snapshot();
+        (snapshot.state.next_attempt, snapshot.state.failures)
     };
     assert_eq!(failures, 1);
     assert!(next_attempt > clock.now(), "a retry must be scheduled");
@@ -1171,7 +1334,7 @@ async fn failed_cycle_backs_off_and_keeps_serving_the_last_good_frame() {
     clock.set(next_attempt);
     assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
     assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 3);
-    assert_eq!(state.state.lock().await.failures, 2);
+    assert_eq!(state.snapshot().state.failures, 2);
 }
 
 #[tokio::test]
@@ -1191,22 +1354,22 @@ async fn forecast_failure_serves_the_last_good_forecast() {
     assert_eq!(provider.forecast_calls.load(Ordering::SeqCst), 1);
 
     provider.fail_forecast.store(true, Ordering::SeqCst);
-    state.state.lock().await.reschedule_now();
+    clock.advance(Mode::Clear.interval());
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(provider.forecast_calls.load(Ordering::SeqCst), 2);
 
-    let degraded = state
+    let snapshot = state.snapshot();
+    let degraded = snapshot
         .state
-        .lock()
-        .await
         .frame
         .as_ref()
         .unwrap()
         .degraded
-        .clone()
-        .unwrap();
+        .as_deref()
+        .unwrap()
+        .to_string();
     assert!(degraded.contains("forecast"), "{degraded}");
     assert!(degraded.contains("using last good"), "{degraded}");
 
@@ -1235,22 +1398,22 @@ async fn alert_failure_serves_the_last_good_alerts() {
     assert_eq!(provider.alert_calls.load(Ordering::SeqCst), 1);
 
     provider.fail_alerts.store(true, Ordering::SeqCst);
-    state.state.lock().await.reschedule_now();
+    clock.advance(Mode::Clear.interval());
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(provider.alert_calls.load(Ordering::SeqCst), 2);
 
-    let degraded = state
+    let snapshot = state.snapshot();
+    let degraded = snapshot
         .state
-        .lock()
-        .await
         .frame
         .as_ref()
         .unwrap()
         .degraded
-        .clone()
-        .unwrap();
+        .as_deref()
+        .unwrap()
+        .to_string();
     assert!(degraded.contains("alerts"), "{degraded}");
     assert!(degraded.contains("using last good"), "{degraded}");
 }
@@ -1281,8 +1444,8 @@ async fn flapping_radar_status_does_not_switch_or_render_each_poll() {
         );
     }
 
-    let state = state.state.lock().await;
-    assert_eq!(state.mode, Mode::Clear);
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.state.mode, Mode::Clear);
     assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -1322,11 +1485,13 @@ async fn restart_restores_the_schedule_and_reuses_the_volume() {
     assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
     assert_eq!(downloads.load(Ordering::SeqCst), 1);
 
-    let next_attempt = state.state.lock().await.next_attempt;
-    assert_eq!(state.state.lock().await.mode, Mode::Storm);
+    let next_attempt = state.snapshot().state.next_attempt;
+    assert_eq!(state.snapshot().state.mode, Mode::Storm);
     assert!(fixture.paths.state_file().is_file());
 
     // Restart: same data directory, same clock, fresh in-memory objects.
+    drop(router);
+    drop(state);
     let (router, state) = app_with_clock(&fixture, provider, radar, renderer, clock.clone());
 
     // The persisted schedule is still in the future, so the first poll after
@@ -1337,10 +1502,13 @@ async fn restart_restores_the_schedule_and_reuses_the_volume() {
     );
     assert_eq!(downloads.load(Ordering::SeqCst), 1);
     {
-        let state = state.state.lock().await;
-        assert_eq!(state.mode, Mode::Storm);
-        assert_eq!(state.radar_key.as_deref(), Some(object.key.as_str()));
-        assert_eq!(state.radar_last_updated, object.last_modified);
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.state.mode, Mode::Storm);
+        assert_eq!(
+            snapshot.state.radar_key.as_deref(),
+            Some(object.key.as_str())
+        );
+        assert_eq!(snapshot.state.radar_last_updated, object.last_modified);
     }
 
     // When the next cycle is due, the volume on disk is newer-or-equal to the

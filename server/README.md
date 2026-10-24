@@ -99,6 +99,22 @@ the fused `render archive` (Archive II -> REF frame). `VEL`, `SW`, `ZDR`,
 `/status` exposes `event=cycle` and `event=upstream` log fields as counters and
 ages, so an external probe does not have to parse the log.
 
+### Update scheduling
+
+One background updater owns the schedule, caches, and published frame. It
+performs every status probe and render cycle itself and publishes an immutable
+snapshot that the handlers read, so no request holds a lock across network I/O
+or rendering.
+
+- A `GET /frame` poll wakes the updater and waits for the result only when work
+  is due; concurrent polls queue behind that one updater, so a burst runs one
+  cycle and the rest return `304`.
+- A 60-second tick lets the schedule, radar-status TTL, and retry backoff
+  advance even while no client is polling.
+- `/`, `/readyz`, and `/status` answer from the snapshot alone. `/settings` is
+  applied by the updater (serialized with any cycle in flight) so the returned
+  page reflects the new state.
+
 | Before | After |
 |---|---|
 | `frame-render frame` | `radar-frame render archive` |
