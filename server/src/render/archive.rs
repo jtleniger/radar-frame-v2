@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use crate::nexrad::archive2::{read_volume, Product};
+use crate::nexrad::archive2::{read_volume, Product, Radial, Volume};
 use crate::nexrad::bins::{build_bins, round_coordinate, round_value};
 use crate::nexrad::geo::{shortest_f32_degrees, Ortho};
 
@@ -30,7 +30,8 @@ pub struct Options {
     pub height: usize,
     /// NEXRAD Archive II volume, plain or gzip-compressed.
     pub archive: PathBuf,
-    /// Elevation numbers to composite, ascending.
+    /// Elevation numbers to composite, ascending. Missing elevations are
+    /// skipped; at least one must be present.
     pub elevations: Vec<u8>,
     pub minimum: Option<f32>,
     pub maximum: Option<f32>,
@@ -67,18 +68,10 @@ pub fn render_archive(options: &Options) -> Result<Summary> {
     let volume = read_volume(&options.archive)
         .map_err(|e| Error(format!("{}: {e}", options.archive.display())))?;
 
-    // The projection origin comes from the first radial of the first sweep,
-    // exactly as the pre-fusion converter chose it.
-    let first = volume
-        .scans
-        .get(&1)
-        .and_then(|scan| scan.first())
-        .ok_or_else(|| {
-            Error(format!(
-                "{}: elevation 1 not present",
-                options.archive.display()
-            ))
-        })?;
+    // The projection origin comes from the first radial of the first scan that
+    // has one; the earliest elevation is not always present in a volume.
+    let first = origin_radial(&volume)
+        .ok_or_else(|| Error(format!("{}: no radials present", options.archive.display())))?;
     let ortho = Ortho::new(
         shortest_f32_degrees(first.volume.lat),
         shortest_f32_degrees(first.volume.lon),
@@ -88,12 +81,14 @@ pub fn render_archive(options: &Options) -> Result<Summary> {
     let mut pixel_ring = Vec::with_capacity(5);
     let mut summary = Summary::default();
     for &elevation in &options.elevations {
-        let scan = volume.scans.get(&elevation).ok_or_else(|| {
-            Error(format!(
-                "{}: elevation {elevation} not present",
-                options.archive.display()
-            ))
-        })?;
+        let Some(scan) = volume.scans.get(&elevation) else {
+            tracing::warn!(
+                archive = %options.archive.display(),
+                elevation,
+                "elevation not present; skipping"
+            );
+            continue;
+        };
 
         summary.elevations.push(elevation);
         summary.radials += scan.len();
@@ -124,6 +119,16 @@ pub fn render_archive(options: &Options) -> Result<Summary> {
         render::merge(&mut composite, &grid);
     }
 
+    if summary.elevations.is_empty() {
+        let available: Vec<u8> = volume.scans.keys().copied().collect();
+        return Err(Error(format!(
+            "{}: none of the requested elevations {:?} are present (available: {:?})",
+            options.archive.display(),
+            options.elevations,
+            available
+        )));
+    }
+
     render::write_composite(
         &composite,
         &streets,
@@ -133,6 +138,12 @@ pub fn render_archive(options: &Options) -> Result<Summary> {
         &options.output,
     )?;
     Ok(summary)
+}
+
+/// The radial that anchors the projection: the lowest elevation scan that
+/// actually contains radials.
+fn origin_radial(volume: &Volume) -> Option<&Radial> {
+    volume.scans.values().find_map(|scan| scan.first())
 }
 
 /// One gate as a single-ring polygon, with the precision of the pre-fusion
@@ -159,4 +170,43 @@ fn rasterize_bin(
         std::slice::from_ref(pixel_ring),
         raster::burn_value(round_value(value)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nexrad::archive2::{Moments, RadialHeader, VolumeBlock};
+    use std::collections::BTreeMap;
+
+    fn radial(lat: f32, lon: f32, elevation: u8) -> Radial {
+        Radial {
+            header: RadialHeader {
+                azimuth_deg: 0.0,
+                elevation_deg: 0.5,
+                elevation_number: elevation,
+                azimuth_resolution_deg: 1.0,
+            },
+            volume: VolumeBlock { lat, lon },
+            moments: Moments::default(),
+        }
+    }
+
+    #[test]
+    fn origin_uses_the_first_scan_with_radials() {
+        let volume = Volume {
+            scans: BTreeMap::from([(1, Vec::new()), (2, vec![radial(35.5, -97.5, 2)])]),
+        };
+
+        let origin = origin_radial(&volume).expect("elevation 2 anchors the frame");
+        assert_eq!(origin.volume.lat, 35.5);
+        assert_eq!(origin.volume.lon, -97.5);
+    }
+
+    #[test]
+    fn no_radials_has_no_origin() {
+        let volume = Volume {
+            scans: BTreeMap::new(),
+        };
+        assert!(origin_radial(&volume).is_none());
+    }
 }

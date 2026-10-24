@@ -119,8 +119,8 @@ ID form: `<category>.<finding>.<action>`.
 | [ ] | 3.3.1 | Mode hysteresis/minimum dwell |
 | [ ] | 3.4.1 | Persist state and radar key/mtime across restarts |
 | [rejected] | ~~3.5.1~~ | ~~Localhost default; auth/rate limit public endpoints~~ |
-| [ ] | 4.1.1 | Paginate S3 listing; handle MDM-only days |
-| [ ] | 4.2.1 | Accept partial elevations; pick first available origin |
+| [x] | 4.1.1 | Paginate S3 listing; handle MDM-only days |
+| [x] | 4.2.1 | Accept partial elevations; pick first available origin |
 | [ ] | 4.3.1 | Reusable ring fill with no per-gate allocations |
 | [ ] | 4.3.2 | Fixed-point rounding instead of `format!`/`parse` |
 | [ ] | 4.3.3 | Burn max directly into the composite |

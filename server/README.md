@@ -236,8 +236,10 @@ Network use:
   are disjoint parameters of the same endpoint, so they are fetched together.
 - NWS: one station request per automatic `/frame` poll and one alerts request
   per update; no polling beyond the existing schedule.
-- S3: an anonymous ListObjectsV2 query for the UTC day (yesterday as a
-  fallback) and one GET for the selected volume.
+- S3: a paginated anonymous ListObjectsV2 query for the UTC day (following
+  `NextContinuationToken`), with yesterday as the fallback when today has no
+  renderable volume or only `_MDM` placeholders, and one GET for the selected
+  volume.
 - Overpass: only when `data/streets.osm` or the mask is missing or stale for
   `[bbox]`; a hand-written OSM file is adopted without a request.
 
@@ -294,8 +296,11 @@ radar-frame render streets \
 radar-frame view palette --output /tmp/palette.png
 ```
 
-`render archive` accepts `-e N` or `-e N-M`; every selected elevation must be
-present in the volume. Without `--colors` it uses the embedded table.
+`render archive` accepts `-e N` or `-e N-M`; selected elevations missing from
+the volume are skipped with a warning, and at least one must be present. The
+projection origin is the first radial of the lowest available scan, so a
+partial volume (for example, one without elevation 1) still renders. Without
+`--colors` it uses the embedded table.
 
 `view storm` reads alerts as JSON on stdin: an array of
 `{event, level, status, effective, expires}` where `level` is

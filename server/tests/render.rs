@@ -238,29 +238,30 @@ fn archive_renders_without_a_street_mask() {
     assert!(rgba.iter().any(|&byte| byte != 0), "frame is blank");
 }
 
-/// The frame path needs every selected elevation; a missing elevation is fatal.
+/// Missing selected elevations are skipped; at least one must be present.
 #[test]
-fn fused_frame_refuses_missing_elevations() {
+fn fused_frame_skips_missing_elevations() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frame/ktlx-mini");
     let archive = Path::new(MINI_ARCHIVE);
     let streets = fixtures.join("streets.png");
+    let expected_png = fixtures.join("frame.expected.png");
 
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("frame.png");
 
-    // Default `-e 1-3`; the mini volume only has elevation 1.
+    // Default `-e 1-3`; the mini volume only has elevation 1. The composited
+    // frame therefore matches the elevation-1 golden.
     let result = run(&fixture_frame_args(archive, &streets, &output));
-    assert!(!result.status.success());
-    let err = stderr(&result);
-    assert!(err.starts_with("radar-frame: "), "{err}");
-    assert!(err.contains("elevation 2 not present"), "{err}");
-    assert!(!output.exists());
+    assert!(result.status.success(), "{}", stderr(&result));
+    assert_same_frame(&output, &expected_png);
 
+    // No requested elevation is present: that is still an error.
+    let output = dir.path().join("missing.png");
     let args = with_elevations(fixture_frame_args(archive, &streets, &output), "2");
     let result = run(&args);
     assert!(!result.status.success());
     let err = stderr(&result);
-    assert!(err.contains("elevation 2 not present"), "{err}");
+    assert!(err.contains("none of the requested elevations"), "{err}");
     assert!(!output.exists());
 }
 
