@@ -71,8 +71,8 @@ fn storm_reads_alerts_from_stdin_and_writes_the_frame() {
 
     let image = Image::from_png(&output).unwrap();
     assert_eq!((image.width, image.height), (800, 480));
-    // The Watch alert paints the info bar yellow.
-    assert_eq!(image.pixel(0, 444), [255, 255, 0, 255]);
+    // The Warning alert outranks the Watch, so the info bar is orange.
+    assert_eq!(image.pixel(0, 444), [255, 128, 0, 255]);
     for y in (0..480).step_by(23) {
         for x in (0..800).step_by(37) {
             let pixel = image.pixel(x, y);
