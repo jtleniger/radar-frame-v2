@@ -159,7 +159,6 @@ impl ForecastProvider for FlakyProvider {
 struct TestRenderer {
     engine: Engine,
     radar_png: PathBuf,
-    radar_out: PathBuf,
 }
 
 impl Renderer for TestRenderer {
@@ -167,10 +166,11 @@ impl Renderer for TestRenderer {
         &self,
         _volume: &Path,
         _minimum: f64,
+        output: &Path,
     ) -> radar_frame::error::Result<radar_frame::render::archive::Summary> {
         // Radar rasterization is covered by frame-render's own goldens; this
         // fixture volume only carries elevation 1.
-        std::fs::copy(&self.radar_png, &self.radar_out)?;
+        std::fs::copy(&self.radar_png, output)?;
         Ok(radar_frame::render::archive::Summary {
             elevations: vec![1],
             radials: 1,
@@ -213,9 +213,14 @@ impl RadarSource for FakeRadar {
         Ok(self.object.clone())
     }
 
-    async fn download(&self, _object: &Object) -> radar_frame::error::Result<Vec<u8>> {
+    async fn download(
+        &self,
+        _object: &Object,
+        destination: &Path,
+    ) -> radar_frame::error::Result<u64> {
         self.downloads.fetch_add(1, Ordering::SeqCst);
-        Ok(self.bytes.clone())
+        std::fs::write(destination, &self.bytes)?;
+        Ok(self.bytes.len() as u64)
     }
 }
 
@@ -452,7 +457,6 @@ async fn storm_frame_matches_flask() {
     let renderer = Arc::new(TestRenderer {
         engine: Engine::new(fixture.paths.clone(), &fixture.config).unwrap(),
         radar_png: golden("debug-frame.png"),
-        radar_out: fixture.paths.radar_img(),
     });
 
     let (router, state) = app(&fixture, Arc::new(provider), Arc::new(radar), renderer);

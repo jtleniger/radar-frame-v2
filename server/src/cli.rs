@@ -313,10 +313,13 @@ async fn render_volume(args: RenderVolume) -> Result<()> {
 
     let engine = Arc::new(Engine::new(paths.clone(), &config)?);
     let volume = args.file.clone();
+    let radar_output = paths.radar_img();
     let radar_engine = Arc::clone(&engine);
-    tokio::task::spawn_blocking(move || radar_engine.render_radar(&volume, args.minimum))
-        .await
-        .map_err(|e| crate::error::Error::new(format!("render task: {e}")))??;
+    tokio::task::spawn_blocking(move || {
+        radar_engine.render_radar(&volume, args.minimum, &radar_output)
+    })
+    .await
+    .map_err(|e| crate::error::Error::new(format!("render task: {e}")))??;
 
     let now = SystemClock.now();
     tokio::task::spawn_blocking(move || engine.render_storm(&[], now))

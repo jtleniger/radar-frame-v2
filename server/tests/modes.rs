@@ -85,9 +85,108 @@ impl RadarSource for NoRadar {
         Ok(None)
     }
 
-    async fn download(&self, _object: &Object) -> radar_frame::error::Result<Vec<u8>> {
+    async fn download(
+        &self,
+        _object: &Object,
+        _destination: &std::path::Path,
+    ) -> radar_frame::error::Result<u64> {
         unreachable!("clear mode does not download radar data")
     }
+}
+
+struct BytesRadar {
+    object: Object,
+    bytes: Vec<u8>,
+}
+
+#[async_trait]
+impl RadarSource for BytesRadar {
+    async fn latest(
+        &self,
+        _nexrad_id: &str,
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<Option<Object>> {
+        Ok(Some(self.object.clone()))
+    }
+
+    async fn download(
+        &self,
+        _object: &Object,
+        destination: &std::path::Path,
+    ) -> radar_frame::error::Result<u64> {
+        std::fs::write(destination, &self.bytes)?;
+        Ok(self.bytes.len() as u64)
+    }
+}
+
+struct FailingRenderer;
+
+impl Renderer for FailingRenderer {
+    fn render_radar(
+        &self,
+        _volume: &std::path::Path,
+        _minimum: f64,
+        _output: &std::path::Path,
+    ) -> radar_frame::error::Result<radar_frame::render::archive::Summary> {
+        Err(radar_frame::error::Error::new("volume rejected"))
+    }
+
+    fn render_storm(
+        &self,
+        _alerts: &[Alert],
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        unreachable!("a rejected volume never reaches the storm view")
+    }
+
+    fn render_clear(
+        &self,
+        _forecast: &Forecast,
+        _alerts: &[Alert],
+        _now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        unreachable!("a rejected volume never reaches the clear view")
+    }
+}
+
+#[tokio::test]
+async fn rejected_volume_keeps_the_last_good_pair() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    std::fs::create_dir_all(paths.data_dir()).unwrap();
+    let config = Config::parse(CONFIG).unwrap();
+
+    std::fs::write(paths.radar_raw(), b"old-volume").unwrap();
+    std::fs::write(paths.radar_img(), b"old-frame").unwrap();
+
+    let engine: Arc<dyn Renderer> = Arc::new(FailingRenderer);
+    let provider = MockProvider::new();
+    let radar = BytesRadar {
+        object: Object {
+            key: "2026/10/21/KTLX/KTLX20261021_153000_V06".into(),
+            last_modified: now(),
+        },
+        bytes: b"not a volume".to_vec(),
+    };
+    let metrics = radar_frame::metrics::Metrics::new(now());
+    let mut state = State::new();
+
+    let deps = Deps {
+        paths: &paths,
+        config: &config,
+        engine: &engine,
+        provider: &provider,
+        radar: &radar,
+        metrics: &metrics,
+        now: now(),
+    };
+    assert!(modes::run(Mode::Storm, &deps, &mut state).await.is_err());
+
+    assert_eq!(state.radar_last_updated, DateTime::UNIX_EPOCH);
+    assert_eq!(std::fs::read(paths.radar_raw()).unwrap(), b"old-volume");
+    assert_eq!(std::fs::read(paths.radar_img()).unwrap(), b"old-frame");
+    assert!(!paths.radar_part().exists());
+    assert!(!paths.radar_img_part().exists());
 }
 
 #[tokio::test]

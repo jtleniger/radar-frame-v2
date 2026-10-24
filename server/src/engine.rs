@@ -27,7 +27,12 @@ pub struct Bounds {
 /// Rendering is a trait so the HTTP layer can be tested without a full
 /// three-elevation volume; production always uses [`Engine`].
 pub trait Renderer: Send + Sync {
-    fn render_radar(&self, volume: &Path, minimum: f64) -> Result<crate::render::archive::Summary>;
+    fn render_radar(
+        &self,
+        volume: &Path,
+        minimum: f64,
+        output: &Path,
+    ) -> Result<crate::render::archive::Summary>;
     fn render_storm(&self, alerts: &[Alert], now: DateTime<Utc>) -> Result<()>;
     fn render_clear(&self, forecast: &Forecast, alerts: &[Alert], now: DateTime<Utc>)
         -> Result<()>;
@@ -61,12 +66,13 @@ impl Engine {
         self.bounds
     }
 
-    /// Rasterize the local Archive II volume to `data/nexrad-latest.png`.
+    /// Rasterize the local Archive II volume to `output`.
     /// `components/radar/render.py` ran `frame-render frame` for this.
     pub fn render_radar(
         &self,
         volume: &Path,
         minimum: f64,
+        output: &Path,
     ) -> Result<crate::render::archive::Summary> {
         Ok(crate::render::archive::render_archive(
             &crate::render::archive::Options {
@@ -82,7 +88,7 @@ impl Engine {
                 maximum: None,
                 colors: self.colors.clone(),
                 streets: self.paths.streets_img(),
-                output: self.paths.radar_img(),
+                output: output.to_path_buf(),
             },
         )?)
     }
@@ -112,8 +118,13 @@ impl Engine {
 }
 
 impl Renderer for Engine {
-    fn render_radar(&self, volume: &Path, minimum: f64) -> Result<crate::render::archive::Summary> {
-        Engine::render_radar(self, volume, minimum)
+    fn render_radar(
+        &self,
+        volume: &Path,
+        minimum: f64,
+        output: &Path,
+    ) -> Result<crate::render::archive::Summary> {
+        Engine::render_radar(self, volume, minimum, output)
     }
 
     fn render_storm(&self, alerts: &[Alert], now: DateTime<Utc>) -> Result<()> {

@@ -13,6 +13,7 @@ pub mod constants;
 pub mod engine;
 pub mod error;
 pub mod frame;
+pub mod fsutil;
 pub mod logging;
 pub mod metrics;
 pub mod modes;

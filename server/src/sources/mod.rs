@@ -66,6 +66,8 @@ pub trait RadarSource: Send + Sync {
     /// yesterday (UTC) as `sources/nexrad_level2.py` does.
     async fn latest(&self, nexrad_id: &str, now: DateTime<Utc>) -> Result<Option<Object>>;
 
-    /// The object's bytes. The caller writes them to `data/nexrad-latest.ar2`.
-    async fn download(&self, object: &Object) -> Result<Vec<u8>>;
+    /// Stream the object to `destination`, returning the number of bytes
+    /// written. Implementations cap the transfer at
+    /// [`crate::nexrad::archive2::MAX_VOLUME_BYTES`].
+    async fn download(&self, object: &Object, destination: &std::path::Path) -> Result<u64>;
 }

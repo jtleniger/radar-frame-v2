@@ -1,6 +1,8 @@
 //! The two render modes, ported from `modes/storm.py` and `modes/clear.py`.
 
 use std::fs;
+use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -58,18 +60,51 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     deps.metrics
         .upstream(deps.now, started.elapsed(), latest.is_ok());
 
+    let mut radar_summary = None;
     if let Some(object) = latest? {
         cycle.volume_key = Some(object.key.clone());
         if object.last_modified > state.radar_last_updated {
             tracing::info!("downloading {}", object.key);
+            let part = deps.paths.radar_part();
             let started = Instant::now();
-            let bytes = deps.radar.download(&object).await;
+            let downloaded = deps.radar.download(&object, &part).await;
             deps.metrics
-                .upstream(deps.now, started.elapsed(), bytes.is_ok());
-            let bytes = bytes?;
+                .upstream(deps.now, started.elapsed(), downloaded.is_ok());
+            if let Err(error) = downloaded {
+                remove(&part);
+                return Err(error);
+            }
+
+            // Parse and render the staged volume before it can replace the
+            // last good pair. A bad volume leaves `nexrad-latest.ar2` and
+            // `nexrad-latest.png` untouched.
+            let png_part = deps.paths.radar_img_part();
+            let volume = part.clone();
+            let output = png_part.clone();
+            let started = Instant::now();
+            let summary = match render(Arc::clone(deps.engine), move |engine| {
+                engine.render_radar(&volume, MINIMUM_DBZ, &output)
+            })
+            .await
+            {
+                Ok(summary) => summary,
+                Err(error) => {
+                    remove(&part);
+                    remove(&png_part);
+                    return Err(error);
+                }
+            };
+            cycle.render_ms += elapsed_ms(started.elapsed());
+
             let raw = deps.paths.radar_raw();
-            fs::write(&raw, bytes).map_err(|e| Error(format!("{}: {e}", raw.display())))?;
+            let radar_img = deps.paths.radar_img();
+            if let Err(error) = commit(&part, &raw).and_then(|()| commit(&png_part, &radar_img)) {
+                remove(&part);
+                remove(&png_part);
+                return Err(error);
+            }
             state.radar_last_updated = object.last_modified;
+            radar_summary = Some(summary);
         } else {
             tracing::info!("using old radar data");
         }
@@ -77,14 +112,21 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
 
     // The Python mode rendered the radar frame on every update, including when
     // the volume was unchanged; keep that so a missing or deleted frame is
-    // rebuilt.
-    let volume = deps.paths.radar_raw();
-    let started = Instant::now();
-    let summary = render(Arc::clone(deps.engine), move |engine| {
-        engine.render_radar(&volume, MINIMUM_DBZ)
-    })
-    .await?;
-    cycle.render_ms += elapsed_ms(started.elapsed());
+    // rebuilt. `radar_img` was already written atomically for a new volume.
+    let summary = match radar_summary {
+        Some(summary) => summary,
+        None => {
+            let volume = deps.paths.radar_raw();
+            let output = deps.paths.radar_img();
+            let started = Instant::now();
+            let summary = render(Arc::clone(deps.engine), move |engine| {
+                engine.render_radar(&volume, MINIMUM_DBZ, &output)
+            })
+            .await?;
+            cycle.render_ms += elapsed_ms(started.elapsed());
+            summary
+        }
+    };
     cycle.elevations = summary.elevations;
     cycle.radials = summary.radials;
     cycle.gates = summary.gates;
@@ -153,4 +195,23 @@ where
     tokio::task::spawn_blocking(move || f(engine.as_ref()))
         .await
         .map_err(|e| Error(format!("render task: {e}")))?
+}
+
+/// Rename a validated staging artifact over its published name.
+fn commit(temp: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temp, destination).map_err(|error| {
+        Error(format!(
+            "{} -> {}: {error}",
+            temp.display(),
+            destination.display()
+        ))
+    })
+}
+
+fn remove(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!("{}: {error}", path.display()),
+    }
 }

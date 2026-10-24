@@ -4,15 +4,18 @@
 //! two HTTP operations: a ListObjectsV2 query for the day's prefix and a plain
 //! GET of the selected key.
 
+use std::path::Path;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, Utc};
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use tokio::io::AsyncWriteExt;
 
 use super::{Object, RadarSource};
 use crate::error::{Error, Result};
+use crate::nexrad::archive2::MAX_VOLUME_BYTES;
 
 pub const BASE_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const BUCKET_PREFIX: &str = "unidata-nexrad-level2";
@@ -95,12 +98,16 @@ impl S3Radar {
         parse_list(&body)
     }
 
-    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+    async fn get_to(&self, key: &str, destination: &Path, max_bytes: u64) -> Result<u64> {
         let url = format!("{BASE_URL}/{key}");
-        tracing::info!("s3 get: {key}");
+        self.stream_to(&url, destination, max_bytes).await
+    }
+
+    async fn stream_to(&self, url: &str, destination: &Path, max_bytes: u64) -> Result<u64> {
+        tracing::info!("s3 get: {url}");
 
         let started = Instant::now();
-        let response = match self.client.get(url.clone()).send().await {
+        let mut response = match self.client.get(url).send().await {
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!(
@@ -131,32 +138,93 @@ impl S3Radar {
             return Err(Error(format!("{url}: {status}: {body}")));
         }
 
-        let bytes = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(error) => {
+        if let Some(length) = response.content_length() {
+            if length > max_bytes {
                 tracing::warn!(
                     event = "upstream",
                     source = "s3-get",
                     status = status.as_u16(),
                     elapsed_ms = elapsed_ms(started),
                     bytes = 0,
-                    error_kind = "body",
+                    error_kind = "size",
                     "upstream response rejected"
                 );
-                return Err(error.into());
+                return Err(Error(format!(
+                    "{url}: Content-Length {length} exceeds the {max_bytes}-byte limit"
+                )));
             }
-        };
+        }
+
+        let mut file = tokio::fs::File::create(destination)
+            .await
+            .map_err(|error| Error(format!("{}: {error}", destination.display())))?;
+        let mut written = 0u64;
+
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(destination).await;
+                    tracing::warn!(
+                        event = "upstream",
+                        source = "s3-get",
+                        status = status.as_u16(),
+                        elapsed_ms = elapsed_ms(started),
+                        bytes = written,
+                        error_kind = "body",
+                        "upstream response rejected"
+                    );
+                    return Err(error.into());
+                }
+            };
+            let Some(chunk) = chunk else { break };
+
+            written = match written.checked_add(chunk.len() as u64) {
+                Some(written) if written <= max_bytes => written,
+                _ => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(destination).await;
+                    tracing::warn!(
+                        event = "upstream",
+                        source = "s3-get",
+                        status = status.as_u16(),
+                        elapsed_ms = elapsed_ms(started),
+                        bytes = written,
+                        error_kind = "size",
+                        "upstream response rejected"
+                    );
+                    return Err(Error(format!(
+                        "{url}: response exceeds the {max_bytes}-byte limit"
+                    )));
+                }
+            };
+
+            if let Err(error) = file.write_all(&chunk).await {
+                drop(file);
+                let _ = tokio::fs::remove_file(destination).await;
+                return Err(Error(format!("{}: {error}", destination.display())));
+            }
+        }
+
+        file.flush()
+            .await
+            .map_err(|error| Error(format!("{}: {error}", destination.display())))?;
+        file.sync_all()
+            .await
+            .map_err(|error| Error(format!("{}: {error}", destination.display())))?;
+        drop(file);
 
         tracing::info!(
             event = "upstream",
             source = "s3-get",
             status = status.as_u16(),
             elapsed_ms = elapsed_ms(started),
-            bytes = bytes.len(),
+            bytes = written,
             "upstream request"
         );
 
-        Ok(bytes.to_vec())
+        Ok(written)
     }
 }
 
@@ -191,8 +259,9 @@ impl RadarSource for S3Radar {
         Ok(objects.into_iter().next())
     }
 
-    async fn download(&self, object: &Object) -> Result<Vec<u8>> {
-        self.get(&object.key).await
+    async fn download(&self, object: &Object, destination: &Path) -> Result<u64> {
+        self.get_to(&object.key, destination, MAX_VOLUME_BYTES)
+            .await
     }
 }
 
@@ -307,5 +376,50 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(day_prefix(now), "2026/10/21");
+    }
+
+    async fn serve(body: &'static [u8]) -> String {
+        use axum::routing::get;
+
+        let app = axum::Router::new().route(
+            "/object",
+            get(move || async move { axum::body::Body::from(body) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}/object")
+    }
+
+    #[tokio::test]
+    async fn streams_a_body_to_the_destination() {
+        let url = serve(b"abcdef").await;
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("volume.part");
+        let radar = S3Radar::new(reqwest::Client::new());
+
+        let written = radar.stream_to(&url, &destination, 8).await.unwrap();
+
+        assert_eq!(written, 6);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"abcdef");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_body_above_the_cap_and_removes_the_part_file() {
+        let url = serve(b"abcdefghi").await;
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("volume.part");
+        let radar = S3Radar::new(reqwest::Client::new());
+
+        let error = radar
+            .stream_to(&url, &destination, 8)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("exceeds"), "{error}");
+        assert!(!destination.exists());
     }
 }
