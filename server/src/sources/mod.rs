@@ -46,9 +46,9 @@ impl RadarStatus {
     }
 }
 
-/// One archive object, with the modification time the schedule compares.
+/// One archive entry, with the modification time the schedule compares.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Object {
+pub struct RadarObject {
     pub key: String,
     pub last_modified: DateTime<Utc>,
 }
@@ -105,10 +105,14 @@ impl Sources {
 pub trait RadarSource: Send + Sync {
     /// Newest archive object for `nexrad_id`, looking at today and then
     /// yesterday (UTC) as `sources/nexrad_level2.py` does.
-    async fn latest(&self, nexrad_id: &str, now: DateTime<Utc>) -> Result<Option<Object>>;
+    async fn latest(&self, nexrad_id: &str, now: DateTime<Utc>) -> Result<Option<RadarObject>>;
 
     /// Stream the object to `destination`, returning the number of bytes
     /// written. Implementations cap the transfer at
     /// [`crate::nexrad::archive2::MAX_VOLUME_BYTES`].
-    async fn download(&self, object: &Object, destination: &std::path::Path) -> Result<u64>;
+    async fn download(
+        &self,
+        radar_object: &RadarObject,
+        destination: &std::path::Path,
+    ) -> Result<u64>;
 }

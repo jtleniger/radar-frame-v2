@@ -1,4 +1,4 @@
-//! `radar-frame check`: exercise one data path end to end, live or mocked.
+//! `radar-frame demo`: exercise one data path end to end, live or mocked.
 //!
 //! Each action is a self-contained diagnostic: it prints what it fetched and
 //! where it wrote the frame, so a failure names the layer that broke.
@@ -10,8 +10,8 @@ use clap::{Args, Subcommand};
 use crate::config::{Config, Paths, Settings};
 use crate::error::{Error, Result};
 use crate::service::clock::{Clock, SystemClock};
-use crate::service::engine::{Engine, Renderer};
-use crate::service::modes::{self, Deps};
+use crate::service::modes::{self, Services};
+use crate::service::renderer::{FrameRenderer, Renderer};
 use crate::service::setup;
 use crate::sources::nexrad::S3Radar;
 use crate::sources::{RadarSource, Sources};
@@ -22,44 +22,44 @@ use crate::view::forecast::{Alert, AlertLevel};
 use super::{context, http_client, init_logging, sources};
 
 #[derive(Subcommand)]
-pub enum CheckCommand {
+pub enum DemoCommand {
     /// Fetch the forecast and alerts and render the clear-sky frame
-    Clear(CheckArgs),
+    Clear(DemoArgs),
     /// Download the latest NEXRAD volume and render the storm frame
-    Radar(CheckArgs),
+    Radar(DemoArgs),
     /// Fetch the active NWS alerts and print them
-    Warnings(CheckArgs),
+    Warnings(DemoArgs),
 }
 
 #[derive(Args)]
-pub struct CheckArgs {
+pub struct DemoArgs {
     /// Use the built-in mock forecast and alerts instead of upstream data
     #[arg(long)]
     mock: bool,
 }
 
-pub async fn run(command: CheckCommand) -> Result<()> {
+pub async fn run(command: DemoCommand) -> Result<()> {
     match command {
-        CheckCommand::Clear(args) => check_clear(args).await,
-        CheckCommand::Radar(args) => check_radar(args).await,
-        CheckCommand::Warnings(args) => check_warnings(args).await,
+        DemoCommand::Clear(args) => run_clear(args).await,
+        DemoCommand::Radar(args) => run_radar(args).await,
+        DemoCommand::Warnings(args) => run_warnings(args).await,
     }
 }
 
-/// Settings plus a client and providers, shared by every check action.
-struct Data {
+/// Settings plus a client and providers, shared by every demo action.
+struct DemoEnvironment {
     paths: Paths,
     config: Config,
     client: reqwest::Client,
     sources: Sources,
 }
 
-fn data(mock: bool) -> Result<Data> {
+fn demo_environment(mock: bool) -> Result<DemoEnvironment> {
     let (paths, config) = context()?;
     init_logging(&paths, &config);
     let client = http_client(&config)?;
     let sources = sources(&config, &client, mock);
-    Ok(Data {
+    Ok(DemoEnvironment {
         paths,
         config,
         client,
@@ -67,20 +67,20 @@ fn data(mock: bool) -> Result<Data> {
     })
 }
 
-async fn check_clear(args: CheckArgs) -> Result<()> {
-    let data = data(args.mock)?;
-    let settings = Settings::from_config(&data.config)?;
-    setup::create_data_dir(&data.paths)?;
-    setup::create_palette(&data.paths)?;
+async fn run_clear(args: DemoArgs) -> Result<()> {
+    let environment = demo_environment(args.mock)?;
+    let settings = Settings::from_config(&environment.config)?;
+    setup::create_data_dir(&environment.paths)?;
+    setup::create_palette(&environment.paths)?;
 
-    let forecast = data.sources.forecast.forecast().await?;
-    let alerts = data.sources.alerts.alerts().await?;
+    let forecast = environment.sources.forecast.forecast().await?;
+    let alerts = environment.sources.alerts.alerts().await?;
     let now = SystemClock.now();
 
-    let engine = Engine::new(data.paths.clone(), &settings);
+    let renderer = FrameRenderer::new(environment.paths.clone(), &settings);
     let rendered = alerts.clone();
     let input = forecast.clone();
-    tokio::task::spawn_blocking(move || engine.render_clear(&input, &rendered, now))
+    tokio::task::spawn_blocking(move || renderer.render_clear(&input, &rendered, now))
         .await
         .map_err(|e| Error::render(format!("render task: {e}")))??;
 
@@ -91,33 +91,34 @@ async fn check_clear(args: CheckArgs) -> Result<()> {
         forecast.daily.len()
     );
     print_alerts(&alerts, now);
-    println!("frame: {}", data.paths.output_img().display());
+    println!("frame: {}", environment.paths.output_img().display());
     Ok(())
 }
 
-async fn check_radar(args: CheckArgs) -> Result<()> {
-    let data = data(args.mock)?;
-    let settings = Settings::from_config(&data.config)?;
-    setup::create_data_dir(&data.paths)?;
-    setup::create_palette(&data.paths)?;
+async fn run_radar(args: DemoArgs) -> Result<()> {
+    let environment = demo_environment(args.mock)?;
+    let settings = Settings::from_config(&environment.config)?;
+    setup::create_data_dir(&environment.paths)?;
+    setup::create_palette(&environment.paths)?;
 
-    let radar: Arc<dyn RadarSource> = Arc::new(S3Radar::new(data.client.clone()));
-    let engine: Arc<dyn Renderer> = Arc::new(Engine::new(data.paths.clone(), &settings));
+    let radar: Arc<dyn RadarSource> = Arc::new(S3Radar::new(environment.client.clone()));
+    let renderer: Arc<dyn Renderer> =
+        Arc::new(FrameRenderer::new(environment.paths.clone(), &settings));
     let now = SystemClock.now();
     let metrics = Metrics::new(now);
     let mut state = State::new();
-    let deps = Deps {
-        paths: &data.paths,
+    let services = Services {
+        paths: &environment.paths,
         settings: &settings,
-        engine: &engine,
-        forecast: data.sources.forecast.as_ref(),
-        alerts: data.sources.alerts.as_ref(),
+        renderer: &renderer,
+        forecast: environment.sources.forecast.as_ref(),
+        alerts: environment.sources.alerts.as_ref(),
         radar: radar.as_ref(),
         metrics: &metrics,
         now,
     };
 
-    let cycle = modes::run(Mode::Storm, &deps, &mut state).await?;
+    let cycle = modes::run(Mode::Storm, &services, &mut state).await?;
 
     println!(
         "volume: {}",
@@ -132,14 +133,14 @@ async fn check_radar(args: CheckArgs) -> Result<()> {
     if let Some(reason) = cycle.degraded {
         println!("degraded: {reason}");
     }
-    println!("radar frame: {}", data.paths.radar_img().display());
-    println!("frame: {}", data.paths.output_img().display());
+    println!("radar frame: {}", environment.paths.radar_img().display());
+    println!("frame: {}", environment.paths.output_img().display());
     Ok(())
 }
 
-async fn check_warnings(args: CheckArgs) -> Result<()> {
-    let data = data(args.mock)?;
-    let alerts = data.sources.alerts.alerts().await?;
+async fn run_warnings(args: DemoArgs) -> Result<()> {
+    let environment = demo_environment(args.mock)?;
+    let alerts = environment.sources.alerts.alerts().await?;
     print_alerts(&alerts, SystemClock.now());
     Ok(())
 }

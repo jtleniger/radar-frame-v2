@@ -30,10 +30,10 @@ server/
     main.rs                thin: radar_frame::cli::main()
     lib.rs                 module tree
     error.rs               typed errors and HTTP mapping
-    cli/                   clap structs, dispatch, check/serve/render/view/setup
+    cli/                   clap structs, dispatch, demo/serve/render/view/setup
     config/                config settings paths constants
     http/                  router handlers pages status updater
-    service/               startup clock engine frame modes setup
+    service/               startup clock renderer frame modes setup
     state/                 schedule, mode selection, persistence
     telemetry/             logging metrics
     util/                  backoff fsutil
@@ -69,9 +69,9 @@ The binary is `target/release/radar-frame`.
 radar-frame serve [--bind 0.0.0.0:8000] [--mock]
 radar-frame setup [--force-streets]
 
-radar-frame check clear [--mock]
-radar-frame check radar [--mock]
-radar-frame check warnings [--mock]
+radar-frame demo clear [--mock]
+radar-frame demo radar [--mock]
+radar-frame demo warnings [--mock]
 
 radar-frame render volume --file <volume.ar2> [--minimum 10] [--force-streets]
 radar-frame render archive --archive <volume.ar2> [-e 1-3] [--minimum <n>] [--maximum <n>]
@@ -87,13 +87,13 @@ radar-frame view clear --palette <png> --output <png>
 radar-frame view palette --output <png>
 ```
 
-`check` exercises one data path end to end and prints what it found plus the
+`demo` exercises one data path end to end and prints what it found plus the
 frame it wrote. `clear` fetches the forecast and alerts and renders the
 clear-sky frame; `radar` downloads the latest NEXRAD volume and renders the
 storm frame; `warnings` fetches the alerts and prints them without rendering.
 `--mock` swaps in the built-in forecast and three active sample alerts, so
-`check clear --mock` and `check warnings --mock` run without network access.
-`check radar --mock` still lists and downloads the live NEXRAD volume.
+`demo clear --mock` and `demo warnings --mock` run without network access.
+`demo radar --mock` still lists and downloads the live NEXRAD volume.
 
 There is no GeoJSON command and no GeoJSON input: the only radar renderer is
 the fused `render archive` (Archive II -> REF frame). `VEL`, `SW`, `ZDR`,
@@ -137,7 +137,7 @@ or rendering.
 | `frame-render streets` | `radar-frame render streets` |
 | `frame-view storm\|clear\|palette` | `radar-frame view storm\|clear\|palette` |
 | `radar-frame render-volume` | `radar-frame render volume` |
-| `radar-frame render-clear\|render-storm` | `radar-frame check clear\|radar` |
+| `radar-frame render-clear\|render-storm` | `radar-frame demo clear\|radar` |
 | `radar-frame serve\|setup` | unchanged |
 | `frame-render radar` | removed |
 | `nexrad-geojson` | removed |
@@ -154,12 +154,12 @@ radar-frame serve --mock
 radar-frame setup
 
 # offline diagnostics: sample warnings, then a rendered clear frame
-radar-frame check warnings --mock
-radar-frame check clear --mock
+radar-frame demo warnings --mock
+radar-frame demo clear --mock
 
 # live diagnostics: alerts, latest volume and storm frame
-radar-frame check warnings
-radar-frame check radar
+radar-frame demo warnings
+radar-frame demo radar
 
 # local inspection from an Archive II volume
 radar-frame render volume --file data/nexrad-latest.ar2

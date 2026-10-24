@@ -18,12 +18,12 @@ use radar_frame::config::settings::Settings;
 use radar_frame::config::Config;
 use radar_frame::http::{self, AppState};
 use radar_frame::service::clock::{Clock, FixedClock};
-use radar_frame::service::engine::{Engine, Renderer};
+use radar_frame::service::renderer::{FrameRenderer, Renderer};
 use radar_frame::sources::mock::MockProvider;
 use radar_frame::sources::nws;
 use radar_frame::sources::{
-    AlertSource, Forecast, ForecastSource, Object, RadarSource, RadarStatus, RadarStatusSource,
-    Sources,
+    AlertSource, Forecast, ForecastSource, RadarObject, RadarSource, RadarStatus,
+    RadarStatusSource, Sources,
 };
 use radar_frame::state::{Mode, ModeSelect};
 
@@ -336,7 +336,7 @@ impl RadarStatusSource for GateProvider {
 
 /// Real clear/storm views with a switch for failing the clear render.
 struct ToggleRenderer {
-    engine: Engine,
+    renderer: FrameRenderer,
     radar_png: PathBuf,
     fail_clear: AtomicBool,
     clear_calls: AtomicUsize,
@@ -345,7 +345,7 @@ struct ToggleRenderer {
 impl ToggleRenderer {
     fn new(fixture: &Fixture, radar_png: PathBuf) -> Self {
         ToggleRenderer {
-            engine: Engine::new(fixture.paths.clone(), &fixture.settings()),
+            renderer: FrameRenderer::new(fixture.paths.clone(), &fixture.settings()),
             radar_png,
             fail_clear: AtomicBool::new(false),
             clear_calls: AtomicUsize::new(0),
@@ -373,7 +373,7 @@ impl Renderer for ToggleRenderer {
         alerts: &[radar_frame::view::forecast::Alert],
         now: DateTime<Utc>,
     ) -> radar_frame::error::Result<()> {
-        self.engine.render_storm(alerts, now)
+        self.renderer.render_storm(alerts, now)
     }
 
     fn render_clear(
@@ -386,12 +386,12 @@ impl Renderer for ToggleRenderer {
         if self.fail_clear.load(Ordering::SeqCst) {
             return Err(radar_frame::error::Error::new("render failed"));
         }
-        self.engine.render_clear(forecast, alerts, now)
+        self.renderer.render_clear(forecast, alerts, now)
     }
 }
 
 struct TestRenderer {
-    engine: Engine,
+    renderer: FrameRenderer,
     radar_png: PathBuf,
 }
 
@@ -417,7 +417,7 @@ impl Renderer for TestRenderer {
         alerts: &[radar_frame::view::forecast::Alert],
         now: DateTime<Utc>,
     ) -> radar_frame::error::Result<()> {
-        self.engine.render_storm(alerts, now)
+        self.renderer.render_storm(alerts, now)
     }
 
     fn render_clear(
@@ -426,7 +426,7 @@ impl Renderer for TestRenderer {
         alerts: &[radar_frame::view::forecast::Alert],
         now: DateTime<Utc>,
     ) -> radar_frame::error::Result<()> {
-        self.engine.render_clear(forecast, alerts, now)
+        self.renderer.render_clear(forecast, alerts, now)
     }
 }
 
@@ -474,7 +474,7 @@ impl Renderer for StaticRenderer {
 
 #[derive(Default)]
 struct FakeRadar {
-    object: Option<Object>,
+    radar_object: Option<RadarObject>,
     bytes: Vec<u8>,
     downloads: Arc<AtomicUsize>,
 }
@@ -485,13 +485,13 @@ impl RadarSource for FakeRadar {
         &self,
         _nexrad_id: &str,
         _now: DateTime<Utc>,
-    ) -> radar_frame::error::Result<Option<Object>> {
-        Ok(self.object.clone())
+    ) -> radar_frame::error::Result<Option<RadarObject>> {
+        Ok(self.radar_object.clone())
     }
 
     async fn download(
         &self,
-        _object: &Object,
+        _object: &RadarObject,
         destination: &Path,
     ) -> radar_frame::error::Result<u64> {
         self.downloads.fetch_add(1, Ordering::SeqCst);
@@ -528,7 +528,10 @@ impl Clock for TestClock {
 }
 
 fn real_renderer(fixture: &Fixture) -> Arc<dyn Renderer> {
-    Arc::new(Engine::new(fixture.paths.clone(), &fixture.settings()))
+    Arc::new(FrameRenderer::new(
+        fixture.paths.clone(),
+        &fixture.settings(),
+    ))
 }
 
 fn app<P>(
@@ -763,7 +766,7 @@ async fn storm_frame_matches_flask() {
     )
     .unwrap();
     let radar = FakeRadar {
-        object: Some(Object {
+        radar_object: Some(RadarObject {
             key: "2026/10/21/KTLX/KTLX20261021_153000_V06".into(),
             last_modified: now() - chrono::Duration::minutes(30),
         }),
@@ -779,7 +782,7 @@ async fn storm_frame_matches_flask() {
     };
 
     let renderer = Arc::new(TestRenderer {
-        engine: Engine::new(fixture.paths.clone(), &fixture.settings()),
+        renderer: FrameRenderer::new(fixture.paths.clone(), &fixture.settings()),
         radar_png: golden("debug-frame.png"),
     });
 
@@ -1470,7 +1473,7 @@ async fn flapping_radar_status_does_not_switch_or_render_each_poll() {
 async fn restart_restores_the_schedule_and_reuses_the_volume() {
     let fixture = Fixture::new();
     let clock = Arc::new(TestClock::new(now()));
-    let object = Object {
+    let radar_object = RadarObject {
         key: "2026/10/21/KTLX/KTLX20261021_150000_V06".into(),
         last_modified: now() - chrono::Duration::minutes(30),
     };
@@ -1478,12 +1481,12 @@ async fn restart_restores_the_schedule_and_reuses_the_volume() {
     let downloads = Arc::new(AtomicUsize::new(0));
 
     let radar = Arc::new(FakeRadar {
-        object: Some(object.clone()),
+        radar_object: Some(radar_object.clone()),
         bytes: bytes.clone(),
         downloads: Arc::clone(&downloads),
     });
     let renderer = Arc::new(TestRenderer {
-        engine: Engine::new(fixture.paths.clone(), &fixture.settings()),
+        renderer: FrameRenderer::new(fixture.paths.clone(), &fixture.settings()),
         radar_png: golden("debug-frame.png"),
     });
     let provider = Arc::new(TestProvider {
@@ -1523,9 +1526,12 @@ async fn restart_restores_the_schedule_and_reuses_the_volume() {
         assert_eq!(snapshot.state.mode, Mode::Storm);
         assert_eq!(
             snapshot.state.radar_key.as_deref(),
-            Some(object.key.as_str())
+            Some(radar_object.key.as_str())
         );
-        assert_eq!(snapshot.state.radar_last_updated, object.last_modified);
+        assert_eq!(
+            snapshot.state.radar_last_updated,
+            radar_object.last_modified
+        );
     }
 
     // When the next cycle is due, the volume on disk is newer-or-equal to the

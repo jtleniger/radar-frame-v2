@@ -80,18 +80,18 @@ pub async fn fetch(
 /// the configured zone (`%-I%p`, lowercased), and daily entries are labelled
 /// with the lowercased English weekday, matching `sources/open_meteo.py`.
 pub fn parse(body: &str, now: DateTime<Utc>, timezone: Tz) -> Result<Forecast> {
-    let data: Response = serde_json::from_str(body)?;
+    let response: Response = serde_json::from_str(body)?;
 
-    if data.hourly.time.len() != data.hourly.weathercode.len()
-        || data.hourly.time.len() != data.hourly.temperature_2m.len()
+    if response.hourly.time.len() != response.hourly.weathercode.len()
+        || response.hourly.time.len() != response.hourly.temperature_2m.len()
     {
         return Err(Error::parse(
             "open-meteo: hourly arrays have different lengths",
         ));
     }
-    if data.daily.time.len() != data.daily.weathercode.len()
-        || data.daily.time.len() != data.daily.temperature_2m_max.len()
-        || data.daily.time.len() != data.daily.temperature_2m_min.len()
+    if response.daily.time.len() != response.daily.weathercode.len()
+        || response.daily.time.len() != response.daily.temperature_2m_max.len()
+        || response.daily.time.len() != response.daily.temperature_2m_min.len()
     {
         return Err(Error::parse(
             "open-meteo: daily arrays have different lengths",
@@ -110,7 +110,7 @@ pub fn parse(body: &str, now: DateTime<Utc>, timezone: Tz) -> Result<Forecast> {
         })?;
 
     let mut hours = Vec::new();
-    for (index, raw) in data.hourly.time.iter().enumerate() {
+    for (index, raw) in response.hourly.time.iter().enumerate() {
         let naive = NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M")
             .map_err(|e| Error::parse(format!("open-meteo hourly time {raw}: {e}")))?;
 
@@ -127,28 +127,28 @@ pub fn parse(body: &str, now: DateTime<Utc>, timezone: Tz) -> Result<Forecast> {
 
         hours.push(ForecastHour {
             hour: time.format("%-I%P").to_string().to_lowercase(),
-            temp_f: data.hourly.temperature_2m[index],
-            code: data.hourly.weathercode[index] as i32,
+            temp_f: response.hourly.temperature_2m[index],
+            code: response.hourly.weathercode[index] as i32,
         });
     }
 
     let mut days = Vec::new();
-    for (index, raw) in data.daily.time.iter().enumerate() {
+    for (index, raw) in response.daily.time.iter().enumerate() {
         let date = NaiveDate::parse_from_str(raw, "%Y-%m-%d")
             .map_err(|e| Error::parse(format!("open-meteo daily time {raw}: {e}")))?;
         days.push(ForecastDay {
             day: date.format("%a").to_string().to_lowercase(),
-            high_f: data.daily.temperature_2m_max[index],
-            low_f: data.daily.temperature_2m_min[index],
-            code: data.daily.weathercode[index] as i32,
+            high_f: response.daily.temperature_2m_max[index],
+            low_f: response.daily.temperature_2m_min[index],
+            code: response.daily.weathercode[index] as i32,
         });
     }
 
     Ok(Forecast {
         current: CurrentConditions {
-            temp_f: data.current_weather.temperature,
-            code: data.current_weather.weathercode as i32,
-            is_day: data.current_weather.is_day == 1,
+            temp_f: response.current_weather.temperature,
+            code: response.current_weather.weathercode as i32,
+            is_day: response.current_weather.is_day == 1,
         },
         hourly: hours,
         daily: days,

@@ -34,8 +34,8 @@ fn svg(name: &str) -> Option<&'static [u8]> {
 /// Rasterize an icon at `size`x`size`: black ink with a hard alpha edge, which
 /// is what the Python view got from CairoSVG plus `quantize(2)`.
 pub fn render_icon(name: &str, size: u32) -> Result<Image> {
-    let data = svg(name).ok_or_else(|| Error::Svg(format!("unknown icon {name}")))?;
-    let tree = Tree::from_data(data, &Options::default())
+    let svg_data = svg(name).ok_or_else(|| Error::Svg(format!("unknown icon {name}")))?;
+    let tree = Tree::from_data(svg_data, &Options::default())
         .map_err(|e| Error::Svg(format!("{name}: {e}")))?;
 
     let source = tree.size();

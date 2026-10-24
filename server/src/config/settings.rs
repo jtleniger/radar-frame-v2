@@ -1,7 +1,7 @@
 //! The configuration `serve` and the renderer both depend on, parsed once.
 //!
 //! The bbox and timezone were previously parsed separately by `AppState` and
-//! `Engine::new`, so a startup could validate one set of values while the
+//! `FrameRenderer::new`, so a startup could validate one set of values while the
 //! renderer used another. [`Settings::from_config`] parses and validates the
 //! values exactly once; [`crate::service::startup::validate`] adds the artifact checks
 //! and returns the same value.
@@ -14,7 +14,7 @@ use crate::config::constants::{RADAR_HEIGHT, WIDTH};
 use crate::config::{Config, DEFAULT_USER_AGENT};
 use crate::error::{Error, Result};
 use crate::render::raster::Transform;
-use crate::service::engine::Bounds;
+use crate::service::renderer::Bounds;
 
 #[derive(Clone, Debug)]
 pub struct Settings {

@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use crate::config::paths::Paths;
 use crate::config::settings::Settings;
 use crate::error::{Error, Result};
-use crate::service::engine::Renderer;
+use crate::service::renderer::Renderer;
 use crate::sources::{AlertSource, Forecast, ForecastSource, RadarSource};
 use crate::state::{Mode, State};
 use crate::telemetry::metrics::{elapsed_ms, Metrics};
@@ -21,10 +21,12 @@ use crate::view::forecast::Alert;
 /// `components/radar/render.py`).
 const MINIMUM_DBZ: f64 = 10.0;
 
-pub struct Deps<'a> {
+/// The handles one render cycle needs: configuration, paths, renderer,
+/// upstream sources, metrics, and the cycle clock.
+pub struct Services<'a> {
     pub paths: &'a Paths,
     pub settings: &'a Settings,
-    pub engine: &'a Arc<dyn Renderer>,
+    pub renderer: &'a Arc<dyn Renderer>,
     pub forecast: &'a dyn ForecastSource,
     pub alerts: &'a dyn AlertSource,
     pub radar: &'a dyn RadarSource,
@@ -46,28 +48,29 @@ pub struct Cycle {
     pub render_ms: u64,
 }
 
-pub async fn run(mode: Mode, deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
+pub async fn run(mode: Mode, services: &Services<'_>, state: &mut State) -> Result<Cycle> {
     match mode {
-        Mode::Storm => storm(deps, state).await,
-        Mode::Clear => clear(deps, state).await,
+        Mode::Storm => storm(services, state).await,
+        Mode::Clear => clear(services, state).await,
     }
 }
 
-async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
-    let nexrad_id = deps.settings.nexrad_id.as_str();
+async fn storm(services: &Services<'_>, state: &mut State) -> Result<Cycle> {
+    let nexrad_id = services.settings.nexrad_id.as_str();
     let mut cycle = Cycle::default();
 
     let started = Instant::now();
-    let latest = deps.radar.latest(nexrad_id, deps.now).await;
-    deps.metrics
-        .upstream(deps.now, started.elapsed(), latest.is_ok());
+    let latest = services.radar.latest(nexrad_id, services.now).await;
+    services
+        .metrics
+        .upstream(services.now, started.elapsed(), latest.is_ok());
 
     // A failed listing falls back to the volume already on disk. The cycle
     // only fails when there is no last good volume to render.
     let latest = match latest {
         Ok(latest) => latest,
         Err(error) => {
-            if !deps.paths.radar_raw().exists() {
+            if !services.paths.radar_raw().exists() {
                 return Err(error);
             }
             tracing::warn!("radar listing unavailable, using the last good volume: {error}");
@@ -77,42 +80,45 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     };
 
     let mut radar_summary = None;
-    if let Some(object) = latest {
+    if let Some(radar_object) = latest {
         // A restarted process restores `radar_last_updated`, so the volume
         // already on disk is not downloaded again. The file itself must still
         // exist; a cleared data directory forces a fresh download.
-        if object.last_modified > state.radar_last_updated || !deps.paths.radar_raw().exists() {
-            tracing::info!("downloading {}", object.key);
-            let part = deps.paths.radar_part();
+        if radar_object.last_modified > state.radar_last_updated
+            || !services.paths.radar_raw().exists()
+        {
+            tracing::info!("downloading {}", radar_object.key);
+            let part = services.paths.radar_part();
             let started = Instant::now();
-            let downloaded = deps.radar.download(&object, &part).await;
-            deps.metrics
-                .upstream(deps.now, started.elapsed(), downloaded.is_ok());
+            let downloaded = services.radar.download(&radar_object, &part).await;
+            services
+                .metrics
+                .upstream(services.now, started.elapsed(), downloaded.is_ok());
 
             match downloaded {
                 Ok(_) => {
                     // Parse and render the staged volume before it can replace
                     // the last good pair. A bad volume leaves
                     // `nexrad-latest.ar2` and `nexrad-latest.png` untouched.
-                    let png_part = deps.paths.radar_img_part();
+                    let png_part = services.paths.radar_img_part();
                     let volume = part.clone();
                     let output = png_part.clone();
                     let started = Instant::now();
-                    let rendered = render(Arc::clone(deps.engine), move |engine| {
-                        engine.render_radar(&volume, MINIMUM_DBZ, &output)
+                    let rendered = render(Arc::clone(services.renderer), move |renderer| {
+                        renderer.render_radar(&volume, MINIMUM_DBZ, &output)
                     })
                     .await;
                     cycle.render_ms += elapsed_ms(started.elapsed());
 
                     match rendered {
                         Ok(summary) => {
-                            let raw = deps.paths.radar_raw();
-                            let radar_img = deps.paths.radar_img();
+                            let raw = services.paths.radar_raw();
+                            let radar_img = services.paths.radar_img();
                             match commit(&part, &raw).and_then(|()| commit(&png_part, &radar_img)) {
                                 Ok(()) => {
-                                    cycle.volume_key = Some(object.key.clone());
-                                    state.radar_last_updated = object.last_modified;
-                                    state.radar_key = Some(object.key.clone());
+                                    cycle.volume_key = Some(radar_object.key.clone());
+                                    state.radar_last_updated = radar_object.last_modified;
+                                    state.radar_key = Some(radar_object.key.clone());
                                     radar_summary = Some(summary);
                                 }
                                 Err(error) => {
@@ -140,7 +146,7 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
                 state
                     .radar_key
                     .clone()
-                    .unwrap_or_else(|| object.key.clone()),
+                    .unwrap_or_else(|| radar_object.key.clone()),
             );
         }
     }
@@ -151,11 +157,11 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     let summary = match radar_summary {
         Some(summary) => summary,
         None => {
-            let volume = deps.paths.radar_raw();
-            let output = deps.paths.radar_img();
+            let volume = services.paths.radar_raw();
+            let output = services.paths.radar_img();
             let started = Instant::now();
-            let summary = render(Arc::clone(deps.engine), move |engine| {
-                engine.render_radar(&volume, MINIMUM_DBZ, &output)
+            let summary = render(Arc::clone(services.renderer), move |renderer| {
+                renderer.render_radar(&volume, MINIMUM_DBZ, &output)
             })
             .await?;
             cycle.render_ms += elapsed_ms(started.elapsed());
@@ -166,27 +172,27 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     cycle.radials = summary.radials;
     cycle.gates = summary.gates;
 
-    let alerts = alerts(deps, state, &mut cycle).await;
-    let now = deps.now;
+    let alerts = alerts(services, state, &mut cycle).await;
+    let now = services.now;
     let started = Instant::now();
-    render(Arc::clone(deps.engine), move |engine| {
-        engine.render_storm(&alerts, now)
+    render(Arc::clone(services.renderer), move |renderer| {
+        renderer.render_storm(&alerts, now)
     })
     .await?;
     cycle.render_ms += elapsed_ms(started.elapsed());
     Ok(cycle)
 }
 
-async fn clear(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
+async fn clear(services: &Services<'_>, state: &mut State) -> Result<Cycle> {
     let mut cycle = Cycle::default();
 
-    let forecast = forecast(deps, state, &mut cycle).await?;
-    let alerts = alerts(deps, state, &mut cycle).await;
-    let now = deps.now;
+    let forecast = forecast(services, state, &mut cycle).await?;
+    let alerts = alerts(services, state, &mut cycle).await;
+    let now = services.now;
 
     let started = Instant::now();
-    render(Arc::clone(deps.engine), move |engine| {
-        engine.render_clear(&forecast, &alerts, now)
+    render(Arc::clone(services.renderer), move |renderer| {
+        renderer.render_clear(&forecast, &alerts, now)
     })
     .await?;
     cycle.render_ms += elapsed_ms(started.elapsed());
@@ -195,11 +201,16 @@ async fn clear(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
 
 /// Fetch the forecast, falling back to the last good one when the upstream
 /// call fails. The cycle fails only before a forecast has ever been cached.
-async fn forecast(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Result<Arc<Forecast>> {
+async fn forecast(
+    services: &Services<'_>,
+    state: &mut State,
+    cycle: &mut Cycle,
+) -> Result<Arc<Forecast>> {
     let started = Instant::now();
-    let forecast = deps.forecast.forecast().await;
-    deps.metrics
-        .upstream(deps.now, started.elapsed(), forecast.is_ok());
+    let forecast = services.forecast.forecast().await;
+    services
+        .metrics
+        .upstream(services.now, started.elapsed(), forecast.is_ok());
 
     match forecast {
         Ok(forecast) => {
@@ -221,11 +232,12 @@ async fn forecast(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Resu
 
 /// Fetch alerts, falling back to the last good list and then to an empty list.
 /// A missing alert layer never fails the frame.
-async fn alerts(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Arc<[Alert]> {
+async fn alerts(services: &Services<'_>, state: &mut State, cycle: &mut Cycle) -> Arc<[Alert]> {
     let started = Instant::now();
-    let alerts = deps.alerts.alerts().await;
-    deps.metrics
-        .upstream(deps.now, started.elapsed(), alerts.is_ok());
+    let alerts = services.alerts.alerts().await;
+    services
+        .metrics
+        .upstream(services.now, started.elapsed(), alerts.is_ok());
 
     let alerts = match alerts {
         Ok(alerts) => {
@@ -260,22 +272,22 @@ fn degrade(cycle: &mut Cycle, reason: String) {
     });
 }
 
-async fn render<T, F>(engine: Arc<dyn Renderer>, f: F) -> Result<T>
+async fn render<T, F>(renderer: Arc<dyn Renderer>, f: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(&dyn Renderer) -> Result<T> + Send + 'static,
 {
-    tokio::task::spawn_blocking(move || f(engine.as_ref()))
+    tokio::task::spawn_blocking(move || f(renderer.as_ref()))
         .await
         .map_err(|e| Error::render(format!("render task: {e}")))?
 }
 
 /// Rename a validated staging artifact over its published name.
-fn commit(temp: &Path, destination: &Path) -> Result<()> {
-    fs::rename(temp, destination).map_err(|error| {
+fn commit(staging: &Path, destination: &Path) -> Result<()> {
+    fs::rename(staging, destination).map_err(|error| {
         Error::io(format!(
             "{} -> {}: {error}",
-            temp.display(),
+            staging.display(),
             destination.display()
         ))
     })

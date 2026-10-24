@@ -13,7 +13,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// committing removes the temporary file.
 pub struct TempPath {
     destination: PathBuf,
-    temp: PathBuf,
+    temp_path: PathBuf,
     committed: bool,
 }
 
@@ -26,7 +26,7 @@ impl TempPath {
             )
         })?;
         let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temp = destination.with_file_name(format!(
+        let temp_path = destination.with_file_name(format!(
             ".{}.{}.{sequence}.tmp",
             name.to_string_lossy(),
             std::process::id()
@@ -34,18 +34,18 @@ impl TempPath {
 
         Ok(TempPath {
             destination: destination.to_path_buf(),
-            temp,
+            temp_path,
             committed: false,
         })
     }
 
     pub fn path(&self) -> &Path {
-        &self.temp
+        &self.temp_path
     }
 
     /// Rename the temporary file over the destination.
     pub fn commit(mut self) -> io::Result<()> {
-        fs::rename(&self.temp, &self.destination)?;
+        fs::rename(&self.temp_path, &self.destination)?;
         self.committed = true;
         Ok(())
     }
@@ -54,20 +54,20 @@ impl TempPath {
 impl Drop for TempPath {
     fn drop(&mut self) {
         if !self.committed {
-            let _ = fs::remove_file(&self.temp);
+            let _ = fs::remove_file(&self.temp_path);
         }
     }
 }
 
 /// Write `bytes` to `path` atomically, syncing before the rename.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temp = TempPath::new(path)?;
+    let temp_path = TempPath::new(path)?;
     {
-        let mut file = File::create(temp.path())?;
+        let mut file = File::create(temp_path.path())?;
         file.write_all(bytes)?;
         file.sync_all()?;
     }
-    temp.commit()
+    temp_path.commit()
 }
 
 #[cfg(test)]
@@ -94,10 +94,10 @@ mod tests {
     fn dropping_an_uncommitted_temp_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         let destination = dir.path().join("artifact");
-        let temp = TempPath::new(&destination).unwrap();
-        fs::write(temp.path(), b"partial").unwrap();
+        let temp_path = TempPath::new(&destination).unwrap();
+        fs::write(temp_path.path(), b"partial").unwrap();
 
-        drop(temp);
+        drop(temp_path);
 
         assert!(!destination.exists());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
