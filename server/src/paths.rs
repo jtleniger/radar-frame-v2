@@ -83,6 +83,11 @@ impl Paths {
     pub fn output_img(&self) -> PathBuf {
         self.data_dir().join("frame.png")
     }
+
+    /// Persisted schedule, mode selection, and radar provenance.
+    pub fn state_file(&self) -> PathBuf {
+        self.data_dir().join("state.json")
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +105,10 @@ mod tests {
         assert_eq!(
             paths.output_img(),
             PathBuf::from("/srv/radar/data/frame.png")
+        );
+        assert_eq!(
+            paths.state_file(),
+            PathBuf::from("/srv/radar/data/state.json")
         );
     }
 }

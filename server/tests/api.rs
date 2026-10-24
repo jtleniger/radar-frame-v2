@@ -91,6 +91,16 @@ impl Fixture {
             config: Config::parse(CONFIG).unwrap(),
         }
     }
+
+    /// Drop persisted state so a recreated app starts from defaults, as a
+    /// fresh installation would.
+    fn reset_state(&self) {
+        match std::fs::remove_file(self.paths.state_file()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("reset state: {error}"),
+        }
+    }
 }
 
 struct TestProvider {
@@ -209,6 +219,42 @@ impl ForecastProvider for CountingProvider {
             return Err(radar_frame::error::Error::new("status unavailable"));
         }
         Ok(self.status)
+    }
+}
+
+/// Provider whose radar status alternates between clear-air and precipitation
+/// on every call, for the mode-hysteresis test.
+struct FlappingProvider {
+    forecast: Forecast,
+    calls: AtomicUsize,
+}
+
+impl FlappingProvider {
+    fn new() -> Self {
+        FlappingProvider {
+            forecast: MockProvider::new().forecast_data().clone(),
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ForecastProvider for FlappingProvider {
+    async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
+        Ok(self.forecast.clone())
+    }
+
+    async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
+        Ok(Vec::new())
+    }
+
+    async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(if call.is_multiple_of(2) {
+            RadarStatus { up: true, vcp: 31 }
+        } else {
+            RadarStatus { up: true, vcp: 212 }
+        })
     }
 }
 
@@ -511,6 +557,7 @@ async fn index_and_settings_match_flask() {
         std::fs::read(golden("settings-auto.html")).unwrap()
     );
 
+    fixture.reset_state();
     let (router, _) = app(
         &fixture,
         Arc::new(MockProvider::new()),
@@ -529,6 +576,7 @@ async fn index_and_settings_match_flask() {
         std::fs::read(golden("index-manual-storm.html")).unwrap()
     );
 
+    fixture.reset_state();
     let (router, _) = app(
         &fixture,
         Arc::new(MockProvider::new()),
@@ -1170,4 +1218,99 @@ async fn alert_failure_serves_the_last_good_alerts() {
         .unwrap();
     assert!(degraded.contains("alerts"), "{degraded}");
     assert!(degraded.contains("using last good"), "{degraded}");
+}
+
+#[tokio::test]
+async fn flapping_radar_status_does_not_switch_or_render_each_poll() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new(now()));
+    let renderer = Arc::new(ToggleRenderer::new(&fixture, golden("debug-frame.png")));
+    let (router, state) = app_with_clock(
+        &fixture,
+        Arc::new(FlappingProvider::new()),
+        Arc::new(FakeRadar::default()),
+        Arc::clone(&renderer) as Arc<dyn Renderer>,
+        clock.clone(),
+    );
+
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 1);
+
+    // Each poll past the status TTL observes the opposite mode, but neither
+    // sample run is long enough to accept a change.
+    for _ in 0..4 {
+        clock.advance(chrono::Duration::seconds(61));
+        assert_eq!(
+            get(&router, "/frame").await.status(),
+            StatusCode::NOT_MODIFIED
+        );
+    }
+
+    let state = state.state.lock().await;
+    assert_eq!(state.mode, Mode::Clear);
+    assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn restart_restores_the_schedule_and_reuses_the_volume() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new(now()));
+    let object = Object {
+        key: "2026/10/21/KTLX/KTLX20261021_150000_V06".into(),
+        last_modified: now() - chrono::Duration::minutes(30),
+    };
+    let bytes = std::fs::read(manifest("tests/fixtures/nexrad/ktlx-mini.ar2")).unwrap();
+    let downloads = Arc::new(AtomicUsize::new(0));
+
+    let radar = Arc::new(FakeRadar {
+        object: Some(object.clone()),
+        bytes: bytes.clone(),
+        downloads: Arc::clone(&downloads),
+    });
+    let renderer = Arc::new(TestRenderer {
+        engine: Engine::new(fixture.paths.clone(), &fixture.config).unwrap(),
+        radar_png: golden("debug-frame.png"),
+    });
+    let provider = Arc::new(TestProvider {
+        forecast: MockProvider::new().forecast_data().clone(),
+        alerts: Vec::new(),
+        status: RadarStatus { up: true, vcp: 212 },
+    });
+
+    let (router, state) = app_with_clock(
+        &fixture,
+        provider.clone(),
+        radar.clone(),
+        renderer.clone(),
+        clock.clone(),
+    );
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
+
+    let next_attempt = state.state.lock().await.next_attempt;
+    assert_eq!(state.state.lock().await.mode, Mode::Storm);
+    assert!(fixture.paths.state_file().is_file());
+
+    // Restart: same data directory, same clock, fresh in-memory objects.
+    let (router, state) = app_with_clock(&fixture, provider, radar, renderer, clock.clone());
+
+    // The persisted schedule is still in the future, so the first poll after
+    // the restart is a 304 rather than a refetch.
+    assert_eq!(
+        get(&router, "/frame").await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
+    {
+        let state = state.state.lock().await;
+        assert_eq!(state.mode, Mode::Storm);
+        assert_eq!(state.radar_key.as_deref(), Some(object.key.as_str()));
+        assert_eq!(state.radar_last_updated, object.last_modified);
+    }
+
+    // When the next cycle is due, the volume on disk is newer-or-equal to the
+    // upstream object, so it is reused instead of downloaded again.
+    clock.set(next_attempt);
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
 }

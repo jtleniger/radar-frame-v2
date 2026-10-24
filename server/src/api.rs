@@ -13,7 +13,6 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use chrono::Duration;
 use chrono_tz::Tz;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -61,8 +60,10 @@ impl AppState {
         let started_at = clock.now();
 
         // A frame left by the previous process is still the last good one;
-        // publish it so the first poll survives an upstream outage.
-        let mut state = State::new();
+        // publish it so the first poll survives an upstream outage. The
+        // persisted schedule is restored with it, so a restart does not
+        // immediately repeat upstream work.
+        let mut state = State::load(&paths.state_file());
         state.frame = PublishedFrame::load(&paths.output_img()).map(Arc::new);
 
         Ok(AppState {
@@ -93,7 +94,6 @@ impl AppState {
             return Ok(false);
         }
 
-        let previous = state.mode;
         let started = Instant::now();
         let status = self.provider.radar_status().await;
         self.metrics
@@ -109,23 +109,30 @@ impl AppState {
                 return Err(error);
             }
         };
-        state.radar_status = Some(status);
 
         tracing::info!("radar status: up={} vcp={}", status.up, status.vcp);
-
         if !status.up {
             tracing::error!("radar down");
-            state.mode = Mode::Clear;
         } else if status.vcp == -1 {
             tracing::error!("some issue with nws api");
-            state.mode = Mode::Clear;
-        } else if status.clear_air_mode() {
-            state.mode = Mode::Clear;
-        } else {
-            state.mode = Mode::Storm;
         }
 
-        Ok(state.mode != previous)
+        // A change is accepted only after consecutive agreeing samples and a
+        // minimum dwell; the first sample after startup bootstraps the mode.
+        let changed = state.observe_status(status, now);
+        if changed {
+            tracing::info!(event = "mode", mode = state.mode.name(), "mode switched");
+        }
+        Ok(changed)
+    }
+}
+
+/// Write the schedule and provenance after a state change. A failure is
+/// reported but never fails the request: the in-memory state remains correct
+/// and the next mutation retries.
+fn persist(paths: &Paths, state: &State) {
+    if let Err(error) = state.save(&paths.state_file()) {
+        tracing::warn!(event = "state", error = %error, "could not persist state");
     }
 }
 
@@ -189,6 +196,8 @@ async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
         failures,
         radar_status,
         status_checked_at,
+        radar_key,
+        radar_last_updated,
         ready,
         reason,
     ) = {
@@ -205,6 +214,8 @@ async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
             state.failures,
             state.radar_status,
             state.status_checked_at,
+            state.radar_key.clone(),
+            state.radar_last_updated,
             ready,
             reason,
         )
@@ -240,6 +251,10 @@ async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
             "checked_at": timestamp(status_checked_at),
             "age_seconds": age_seconds(now, status_checked_at),
         })),
+        "radar_volume": {
+            "key": radar_key,
+            "last_updated": timestamp(radar_last_updated),
+        },
         "ready": ready,
         "ready_reason": reason,
         "data_writable": writable,
@@ -401,24 +416,8 @@ async fn settings(
     tracing::info!("Set mode select to {}", mode_select.name());
 
     let mut state = app.state.lock().await;
-    let previous = state.mode;
-
-    state.mode_select = mode_select;
-    if mode_select == ModeSelect::Manual {
-        state.manual_til = Some(app.clock.now() + Duration::days(1));
-    } else {
-        state.manual_til = None;
-    }
-
-    if mode_select == ModeSelect::Manual {
-        if let Some(mode) = requested_mode {
-            state.mode = mode;
-        }
-    }
-
-    if previous != state.mode {
-        state.reschedule_now();
-    }
+    state.apply_settings(mode_select, requested_mode, app.clock.now());
+    persist(&app.paths, &state);
 
     let fields = fields(&state, app.timezone);
     drop(state);
@@ -458,9 +457,9 @@ async fn frame(
     tracing::info!("last updated: {}", state.last_updated);
     tracing::info!("now: {now}");
 
-    if state.mode_select == ModeSelect::Manual && state.manual_til.is_none_or(|til| now > til) {
-        state.mode_select = ModeSelect::Auto;
+    if state.expire_manual(now) {
         tracing::info!("manual mode expired");
+        persist(&app.paths, &state);
     }
 
     if state.mode_select == ModeSelect::Auto {
@@ -468,6 +467,7 @@ async fn frame(
             Ok(changed) => {
                 if changed {
                     state.reschedule_now();
+                    persist(&app.paths, &state);
                 }
             }
             Err(error) => {
@@ -516,6 +516,7 @@ async fn frame(
                 );
                 tracing::error!("{} mode failed: {error}", mode.name());
                 state.cycle_failed(now, mode);
+                persist(&app.paths, &state);
                 return last_good(&state, &headers);
             }
         };
@@ -537,6 +538,7 @@ async fn frame(
                         );
                         tracing::error!("{}: {error}", app.paths.output_img().display());
                         state.cycle_failed(now, mode);
+                        persist(&app.paths, &state);
                         return last_good(&state, &headers);
                     }
                 }
@@ -554,6 +556,7 @@ async fn frame(
                 );
                 tracing::error!("{}: {error}", app.paths.output_img().display());
                 state.cycle_failed(now, mode);
+                persist(&app.paths, &state);
                 return last_good(&state, &headers);
             }
         };
@@ -561,6 +564,7 @@ async fn frame(
         let frame = Arc::new(frame);
         state.cycle_succeeded(now, mode);
         state.frame = Some(Arc::clone(&frame));
+        persist(&app.paths, &state);
         drop(state);
 
         let outcome = if cycle.degraded.is_some() {
