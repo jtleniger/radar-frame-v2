@@ -16,7 +16,7 @@ pub const BASE_URL: &str = "https://api.weather.gov/";
 
 #[derive(Deserialize)]
 struct AlertsResponse {
-    features: Vec<Feature>,
+    features: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -74,10 +74,20 @@ pub async fn radar_status(client: &reqwest::Client, config: &Config) -> Result<R
 
 pub fn parse_alerts(body: &str) -> Result<Vec<Alert>> {
     let data: AlertsResponse = serde_json::from_str(body)?;
-    data.features
-        .iter()
-        .map(|feature| alert(&feature.properties))
-        .collect()
+    let mut alerts = Vec::with_capacity(data.features.len());
+
+    // One malformed feature must not discard the alerts around it.
+    for feature in data.features {
+        let parsed = serde_json::from_value::<Feature>(feature)
+            .map_err(Error::from)
+            .and_then(|feature| alert(&feature.properties));
+        match parsed {
+            Ok(alert) => alerts.push(alert),
+            Err(error) => tracing::warn!("skipping malformed nws alert: {error}"),
+        }
+    }
+
+    Ok(alerts)
 }
 
 fn alert(properties: &Properties) -> Result<Alert> {
@@ -120,7 +130,7 @@ fn timestamp(field: &str, value: &str) -> Result<DateTime<FixedOffset>> {
 
 #[derive(Deserialize)]
 struct Station {
-    properties: StationProperties,
+    properties: Option<StationProperties>,
 }
 
 #[derive(Deserialize)]
@@ -130,7 +140,7 @@ struct StationProperties {
 
 #[derive(Deserialize)]
 struct Rda {
-    properties: RdaProperties,
+    properties: Option<RdaProperties>,
 }
 
 #[derive(Deserialize)]
@@ -142,20 +152,25 @@ struct RdaProperties {
 
 pub fn parse_radar_status(body: &str) -> Result<RadarStatus> {
     let station: Station = serde_json::from_str(body)?;
-    let rda = station
+    let Some(rda) = station
         .properties
-        .rda
-        .ok_or_else(|| Error("nws station response has no rda properties".into()))?;
+        .and_then(|properties| properties.rda)
+        .and_then(|rda| rda.properties)
+    else {
+        // A station without RDA data cannot be reporting precipitation, so
+        // treat it as down and let the mode fall back to Clear.
+        tracing::warn!("nws station response has no rda properties; treating radar as down");
+        return Ok(RadarStatus { up: false, vcp: -1 });
+    };
 
     let vcp = rda
-        .properties
         .volume_coverage_pattern
         .as_deref()
         .and_then(first_number)
         .unwrap_or(-1);
 
     Ok(RadarStatus {
-        up: rda.properties.status.as_deref() == Some("Operate"),
+        up: rda.status.as_deref() == Some("Operate"),
         vcp,
     })
 }
@@ -208,6 +223,42 @@ mod tests {
         assert!(status.up);
         assert_eq!(status.vcp, 212);
         assert!(!status.clear_air_mode());
+    }
+
+    #[test]
+    fn skips_malformed_alert_features() {
+        let body = r#"{
+            "features": [
+                {"properties": {"event": "Tornado Warning", "urgency": "Immediate", "severity": "Extreme", "certainty": "Observed", "status": "Actual", "effective": "2026-10-21T10:24:56-05:00", "expires": "2026-10-21T13:34:56-05:00"}},
+                {"properties": {"event": "Bad timestamp", "urgency": "Immediate", "severity": "Extreme", "certainty": "Observed", "status": "Actual", "effective": "yesterday", "expires": "2026-10-21T13:34:56-05:00"}},
+                {"properties": {"event": "Missing fields"}}
+            ]
+        }"#;
+
+        let alerts = parse_alerts(body).unwrap();
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].event, "tornado warning");
+        assert_eq!(alerts[0].level, AlertLevel::Emergency);
+    }
+
+    #[test]
+    fn missing_rda_is_down_with_unknown_vcp() {
+        for body in [
+            r#"{}"#,
+            r#"{"properties": {}}"#,
+            r#"{"properties": {"rda": null}}"#,
+            r#"{"properties": {"rda": {}}}"#,
+        ] {
+            let status = parse_radar_status(body).unwrap();
+            assert!(!status.up, "{body}");
+            assert_eq!(status.vcp, -1, "{body}");
+        }
+    }
+
+    #[test]
+    fn invalid_station_json_is_an_upstream_error() {
+        assert!(parse_radar_status("not json").is_err());
     }
 
     #[test]
