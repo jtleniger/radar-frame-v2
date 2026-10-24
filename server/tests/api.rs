@@ -897,6 +897,18 @@ async fn operational_endpoints_report_frame_and_counters() {
     assert_eq!(status["radar_status"]["up"], true);
     assert_eq!(status["radar_status"]["vcp"], 31);
     assert_eq!(state.metrics.requests_total(), 5);
+
+    // The home page renders the same snapshot: readiness, identity, mode,
+    // and the last cycle outcome must all be visible.
+    let response = get(&router, "/").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = String::from_utf8(body_bytes(response).await).unwrap();
+    assert!(page.contains(">Ready</span>"), "{page}");
+    assert!(page.contains("KTLX · v0.1.0"));
+    assert!(page.contains(">Clear<small>"));
+    assert!(page.contains("Last cycle"));
+    assert!(page.contains(">ok<small>"));
+    assert!(page.contains(">Writable<small>"));
 }
 
 #[tokio::test]
@@ -927,6 +939,11 @@ async fn readiness_rejects_a_stale_frame() {
     let status: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
     assert_eq!(status["ready"], false);
     assert_eq!(status["ready_reason"], "frame is stale");
+
+    let response = get(&router, "/").await;
+    let page = String::from_utf8(body_bytes(response).await).unwrap();
+    assert!(page.contains(">Not ready</span>"));
+    assert!(page.contains("frame is stale"));
 }
 
 #[tokio::test]

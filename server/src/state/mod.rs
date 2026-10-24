@@ -337,15 +337,7 @@ struct Persisted {
 }
 
 fn local_string(time: DateTime<Utc>, timezone: Tz) -> Option<String> {
-    if time == DateTime::UNIX_EPOCH {
-        return None;
-    }
-
-    Some(
-        time.with_timezone(&timezone)
-            .format("%Y-%m-%d %I:%M%p")
-            .to_string(),
-    )
+    crate::util::time::local(time, timezone)
 }
 
 #[cfg(test)]
@@ -373,11 +365,11 @@ mod tests {
 
         assert_eq!(
             state.last_updated_str(chrono_tz::America::Chicago).unwrap(),
-            "2026-10-21 10:30AM"
+            "Oct 21, 10:30 AM"
         );
         assert_eq!(
             state.manual_til_str(chrono_tz::America::Chicago).unwrap(),
-            "2026-10-22 10:30AM"
+            "Oct 22, 10:30 AM"
         );
     }
 

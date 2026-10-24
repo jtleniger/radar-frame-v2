@@ -93,6 +93,7 @@ the fused `render archive` (Archive II -> REF frame). `VEL`, `SW`, `ZDR`,
 
 | Path | Purpose |
 |---|---|
+| `GET /` | Home page: latest frame, readiness, schedule/radar/service status from the same snapshot as `/status`, and the mode form. |
 | `GET /frame` | Current e-ink frame; `304` until the next cycle is due. A failed cycle keeps serving the last good frame and backs off. |
 | `GET /frame?debug=true` | Last published frame, bypassing the schedule. |
 | `POST /settings` | Mode-selection form target. |
