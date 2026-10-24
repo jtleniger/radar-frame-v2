@@ -19,28 +19,38 @@ use crate::nexrad::archive2::MAX_VOLUME_BYTES;
 
 pub const BASE_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const BUCKET_PREFIX: &str = "unidata-nexrad-level2";
+/// A day has a few hundred volume keys. The cap only stops a broken listing
+/// that insists there is another page forever.
+const MAX_LIST_PAGES: usize = 100;
 
 pub struct S3Radar {
     client: reqwest::Client,
+    base_url: String,
 }
 
 impl S3Radar {
     pub fn new(client: reqwest::Client) -> Self {
-        S3Radar { client }
+        S3Radar::with_base_url(client, BASE_URL)
     }
 
-    async fn list(&self, prefix: &str) -> Result<Vec<Object>> {
-        let url = format!("{BASE_URL}/");
+    fn with_base_url(client: reqwest::Client, base_url: impl Into<String>) -> Self {
+        S3Radar {
+            client,
+            base_url: base_url.into(),
+        }
+    }
+
+    async fn list(&self, prefix: &str, token: Option<&str>) -> Result<Listing> {
+        let url = format!("{}/", self.base_url);
         tracing::info!("s3 list: {BUCKET_PREFIX}/{prefix}");
 
+        let mut query = vec![("list-type", "2"), ("prefix", prefix)];
+        if let Some(token) = token {
+            query.push(("continuation-token", token));
+        }
+
         let started = Instant::now();
-        let response = match self
-            .client
-            .get(url)
-            .query(&[("list-type", "2"), ("prefix", prefix)])
-            .send()
-            .await
-        {
+        let response = match self.client.get(url).query(&query).send().await {
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!(
@@ -98,8 +108,40 @@ impl S3Radar {
         parse_list(&body)
     }
 
+    /// Every page of a prefix's listing, following `NextContinuationToken`.
+    async fn day_objects(&self, prefix: &str) -> Result<Vec<Object>> {
+        let mut objects = Vec::new();
+        let mut token = None;
+
+        for _ in 0..MAX_LIST_PAGES {
+            let page = self.list(prefix, token.as_deref()).await?;
+            objects.extend(page.objects);
+
+            if !page.truncated {
+                return Ok(objects);
+            }
+            token = Some(page.next_token.ok_or_else(|| {
+                Error(format!(
+                    "s3 list {prefix}: truncated without a continuation token"
+                ))
+            })?);
+        }
+
+        Err(Error(format!(
+            "s3 list {prefix}: more than {MAX_LIST_PAGES} pages"
+        )))
+    }
+
+    /// Listing entries that carry real volume data. `_MDM` objects are
+    /// metadata-only placeholders and cannot be rendered.
+    async fn volumes(&self, prefix: &str) -> Result<Vec<Object>> {
+        let mut objects = self.day_objects(prefix).await?;
+        objects.retain(|object| !object.key.ends_with("_MDM"));
+        Ok(objects)
+    }
+
     async fn get_to(&self, key: &str, destination: &Path, max_bytes: u64) -> Result<u64> {
-        let url = format!("{BASE_URL}/{key}");
+        let url = format!("{}/{key}", self.base_url);
         self.stream_to(&url, destination, max_bytes).await
     }
 
@@ -240,18 +282,19 @@ fn elapsed_ms(started: Instant) -> u64 {
 impl RadarSource for S3Radar {
     async fn latest(&self, nexrad_id: &str, now: DateTime<Utc>) -> Result<Option<Object>> {
         let mut prefix = format!("{}/{}", day_prefix(now), nexrad_id);
-        let mut objects = self.list(&prefix).await?;
+        let mut objects = self.volumes(&prefix).await?;
 
         if objects.is_empty() {
-            // Midnight UTC can leave today with no objects yet.
+            // Midnight UTC can leave today with no searchable volumes yet,
+            // and an MDM-only day has nothing to render; either way, use the
+            // previous day's last volume.
             let yesterday = now - Duration::days(1);
             prefix = format!("{}/{}", day_prefix(yesterday), nexrad_id);
-            objects = self.list(&prefix).await?;
+            objects = self.volumes(&prefix).await?;
         }
 
-        objects.retain(|object| !object.key.ends_with("_MDM"));
         if objects.is_empty() {
-            tracing::error!("no objects found for prefix {prefix}");
+            tracing::error!("no volumes found for prefix {prefix}");
             return Ok(None);
         }
 
@@ -265,9 +308,18 @@ impl RadarSource for S3Radar {
     }
 }
 
+/// One ListObjectsV2 page: its objects and whether another page follows.
+#[derive(Debug, Default)]
+pub struct Listing {
+    pub objects: Vec<Object>,
+    pub truncated: bool,
+    pub next_token: Option<String>,
+}
+
 /// Parse a ListObjectsV2 result. Only `Contents` entries with a `Key` and a
-/// `LastModified` are returned.
-pub fn parse_list(body: &str) -> Result<Vec<Object>> {
+/// `LastModified` are returned; `IsTruncated` and `NextContinuationToken`
+/// describe the following page.
+pub fn parse_list(body: &str) -> Result<Listing> {
     let mut reader = Reader::from_str(body);
     reader.config_mut().trim_text(true);
 
@@ -276,6 +328,8 @@ pub fn parse_list(body: &str) -> Result<Vec<Object>> {
     let mut tag: Vec<u8> = Vec::new();
     let mut key: Option<String> = None;
     let mut last_modified: Option<String> = None;
+    let mut truncated = false;
+    let mut next_token = None;
     let mut buffer = Vec::new();
 
     loop {
@@ -305,15 +359,19 @@ pub fn parse_list(body: &str) -> Result<Vec<Object>> {
                 }
                 tag.clear();
             }
-            Ok(Event::Text(event)) if inside_contents => {
+            Ok(Event::Text(event)) => {
                 let text = event
                     .unescape()
                     .map_err(|e| Error(format!("s3 list xml: {e}")))?
                     .into_owned();
-                if tag == b"Key" {
+                if inside_contents && tag == b"Key" {
                     key = Some(text);
-                } else if tag == b"LastModified" {
+                } else if inside_contents && tag == b"LastModified" {
                     last_modified = Some(text);
+                } else if tag == b"IsTruncated" {
+                    truncated = text.eq_ignore_ascii_case("true");
+                } else if tag == b"NextContinuationToken" {
+                    next_token = Some(text);
                 }
             }
             Ok(Event::Eof) => break,
@@ -323,12 +381,18 @@ pub fn parse_list(body: &str) -> Result<Vec<Object>> {
         buffer.clear();
     }
 
-    Ok(objects)
+    Ok(Listing {
+        objects,
+        truncated,
+        next_token,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     const LIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -353,21 +417,41 @@ mod tests {
 
     #[test]
     fn parses_contents_and_times() {
-        let objects = parse_list(LIST).unwrap();
-        assert_eq!(objects.len(), 3);
-        assert_eq!(objects[2].key, "2026/10/21/KTLX/KTLX20261021_153500_V06");
+        let listing = parse_list(LIST).unwrap();
+        assert_eq!(listing.objects.len(), 3);
+        assert!(!listing.truncated);
+        assert_eq!(listing.next_token, None);
         assert_eq!(
-            objects[2].last_modified.to_string(),
+            listing.objects[2].key,
+            "2026/10/21/KTLX/KTLX20261021_153500_V06"
+        );
+        assert_eq!(
+            listing.objects[2].last_modified.to_string(),
             "2026-10-21 15:35:00 UTC"
         );
     }
 
     #[test]
+    fn parses_the_next_page_marker() {
+        let listing = parse_list(
+            "<ListBucketResult><IsTruncated>true</IsTruncated>\
+             <NextContinuationToken>1/abc+def=</NextContinuationToken>\
+             <Contents><Key>k</Key>\
+             <LastModified>2026-10-21T15:35:00Z</LastModified></Contents>\
+             </ListBucketResult>",
+        )
+        .unwrap();
+        assert!(listing.truncated);
+        assert_eq!(listing.next_token.as_deref(), Some("1/abc+def="));
+        assert_eq!(listing.objects.len(), 1);
+    }
+
+    #[test]
     fn ignores_objects_without_times() {
-        let objects =
+        let listing =
             parse_list("<ListBucketResult><Contents><Key>k</Key></Contents></ListBucketResult>")
                 .unwrap();
-        assert!(objects.is_empty());
+        assert!(listing.objects.is_empty());
     }
 
     #[test]
@@ -391,6 +475,138 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         format!("http://{address}/object")
+    }
+
+    /// Serve S3 listings from `handler`, recording each query string.
+    async fn serve_listing(
+        handler: impl Fn(HashMap<String, String>) -> &'static str + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<HashMap<String, String>>>>) {
+        use axum::routing::get;
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&requests);
+        let handler = Arc::new(handler);
+        let app = axum::Router::new().route(
+            "/",
+            get(
+                move |axum::extract::Query(params): axum::extract::Query<
+                    HashMap<String, String>,
+                >| {
+                    let recorded = Arc::clone(&recorded);
+                    let handler = Arc::clone(&handler);
+                    async move {
+                        recorded.lock().unwrap().push(params.clone());
+                        handler(params)
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}"), requests)
+    }
+
+    const PAGE_ONE: &str = r#"<ListBucketResult>
+  <IsTruncated>true</IsTruncated>
+  <NextContinuationToken>page-2</NextContinuationToken>
+  <Contents>
+    <Key>2026/10/21/KTLX/KTLX20261021_153000_V06</Key>
+    <LastModified>2026-10-21T15:30:00.000Z</LastModified>
+  </Contents>
+</ListBucketResult>"#;
+
+    const PAGE_TWO: &str = r#"<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents>
+    <Key>2026/10/21/KTLX/KTLX20261021_154500_V06</Key>
+    <LastModified>2026-10-21T15:45:00.000Z</LastModified>
+  </Contents>
+</ListBucketResult>"#;
+
+    fn latest_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-10-21T16:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[tokio::test]
+    async fn follows_continuation_tokens_to_the_newest_volume() {
+        let (base, requests) = serve_listing(|params| {
+            if params.get("continuation-token").map(String::as_str) == Some("page-2") {
+                PAGE_TWO
+            } else {
+                PAGE_ONE
+            }
+        })
+        .await;
+
+        let radar = S3Radar::with_base_url(reqwest::Client::new(), base);
+        let latest = radar.latest("KTLX", latest_now()).await.unwrap().unwrap();
+
+        assert_eq!(
+            latest.key, "2026/10/21/KTLX/KTLX20261021_154500_V06",
+            "the newest object was on the second page"
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert_eq!(requests[1].get("continuation-token").unwrap(), "page-2");
+        assert_eq!(requests[1].get("prefix").unwrap(), "2026/10/21/KTLX");
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_yesterday_when_today_is_mdm_only() {
+        const TODAY_MDM: &str = r#"<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents>
+    <Key>2026/10/21/KTLX/KTLX20261021_153000_V06_MDM</Key>
+    <LastModified>2026-10-21T15:30:00.000Z</LastModified>
+  </Contents>
+</ListBucketResult>"#;
+        const YESTERDAY: &str = r#"<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents>
+    <Key>2026/10/20/KTLX/KTLX20261020_235500_V06</Key>
+    <LastModified>2026-10-20T23:55:00.000Z</LastModified>
+  </Contents>
+</ListBucketResult>"#;
+
+        let (base, requests) = serve_listing(|params| {
+            if params["prefix"].starts_with("2026/10/20") {
+                YESTERDAY
+            } else {
+                TODAY_MDM
+            }
+        })
+        .await;
+
+        let radar = S3Radar::with_base_url(reqwest::Client::new(), base);
+        let latest = radar.latest("KTLX", latest_now()).await.unwrap().unwrap();
+
+        assert_eq!(latest.key, "2026/10/20/KTLX/KTLX20261020_235500_V06");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert_eq!(requests[0].get("prefix").unwrap(), "2026/10/21/KTLX");
+        assert_eq!(requests[1].get("prefix").unwrap(), "2026/10/20/KTLX");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_truncated_page_without_a_token() {
+        let (base, _) = serve_listing(|_| {
+            "<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>"
+        })
+        .await;
+
+        let radar = S3Radar::with_base_url(reqwest::Client::new(), base);
+        let error = radar
+            .latest("KTLX", latest_now())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("continuation token"), "{error}");
     }
 
     #[tokio::test]
