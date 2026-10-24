@@ -267,7 +267,29 @@ async fn serve(args: Serve) -> Result<()> {
     );
 
     let client = http_client(&config)?;
-    setup::create_streets(&paths, &config, &Overpass::new(client.clone()), false).await?;
+
+    // The overlay is cosmetic: build it in the background so an Overpass
+    // outage can neither delay startup nor fail the service. Every failure is
+    // retried with exponential backoff until the mask is current.
+    let streets_paths = paths.clone();
+    let streets_config = config.clone();
+    let streets_client = client.clone();
+    tokio::spawn(async move {
+        if let Err(error) = setup::retry_streets(
+            &streets_paths,
+            &streets_config,
+            &Overpass::new(streets_client),
+            setup::StreetsRetry::default(),
+        )
+        .await
+        {
+            tracing::error!(
+                event = "streets_unavailable",
+                error = %error,
+                "street overlay remains unavailable"
+            );
+        }
+    });
 
     let radar: Arc<dyn RadarSource> = Arc::new(S3Radar::new(client.clone()));
     let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &config)?);
@@ -309,7 +331,15 @@ async fn render_volume(args: RenderVolume) -> Result<()> {
     setup::create_palette(&paths)?;
 
     let client = http_client(&config)?;
-    setup::create_streets(&paths, &config, &Overpass::new(client), args.force_streets).await?;
+    if let Err(error) =
+        setup::create_streets(&paths, &config, &Overpass::new(client), args.force_streets).await
+    {
+        tracing::warn!(
+            event = "streets_unavailable",
+            error = %error,
+            "rendering without the street overlay"
+        );
+    }
 
     let engine = Arc::new(Engine::new(paths.clone(), &config)?);
     let volume = args.file.clone();
@@ -393,7 +423,7 @@ fn render_archive(args: ArchiveArgs) -> Result<()> {
         minimum: args.minimum,
         maximum: args.maximum,
         colors: args.colors,
-        streets: args.streets,
+        streets: Some(args.streets),
         output: args.output,
     })?;
     Ok(())

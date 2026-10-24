@@ -16,6 +16,40 @@ use crate::render::{Error, Result};
 /// A parsed OSM node: id -> [lon, lat].
 type Nodes = HashMap<i64, [f64; 2]>;
 
+/// Reject a body whose document element is not `<osm>`.
+///
+/// Overpass can answer with an HTML error page and status `200`; that page
+/// parses as well-formed XML with no highway ways, so the root check is what
+/// keeps it from being mistaken for an empty street mask.
+pub fn validate_root(xml: &str) -> Result<()> {
+    let mut reader = Reader::from_reader(Cursor::new(xml));
+    reader.config_mut().trim_text(true);
+
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                if e.name().as_ref() == b"osm" {
+                    return Ok(());
+                }
+                return Err(Error(format!(
+                    "OSM XML root is <{}>, not <osm>",
+                    String::from_utf8_lossy(e.name().as_ref())
+                )));
+            }
+            Ok(Event::Eof) => return Err(Error("OSM XML has no <osm> root".into())),
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error(format!(
+                    "OSM XML parse error at position {}: {e}",
+                    reader.buffer_position()
+                )))
+            }
+        }
+        buf.clear();
+    }
+}
+
 /// Parse Overpass OSM XML and return the highway polylines.
 ///
 /// Only ways whose `highway` tag contains the substring `motorway` or `primary`
@@ -216,6 +250,20 @@ mod tests {
         assert_eq!(polylines.len(), 2);
         assert_eq!(polylines[0], vec![[-97.0, 35.0], [-97.1, 35.1]]);
         assert_eq!(polylines[1], vec![[-97.0, 35.0], [-97.2, 35.2]]);
+    }
+
+    #[test]
+    fn rejects_a_document_that_is_not_osm() {
+        let error = validate_root("<html><body>Overpass error</body></html>")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("<html>"), "{error}");
+        assert!(error.contains("not <osm>"), "{error}");
+    }
+
+    #[test]
+    fn accepts_an_empty_osm_document() {
+        validate_root("<?xml version=\"1.0\"?><osm version=\"0.6\"></osm>").unwrap();
     }
 
     #[test]

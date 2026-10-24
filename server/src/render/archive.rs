@@ -35,7 +35,8 @@ pub struct Options {
     pub minimum: Option<f32>,
     pub maximum: Option<f32>,
     pub colors: Option<PathBuf>,
-    pub streets: PathBuf,
+    /// Street mask to overlay; `None` renders the radar frame alone.
+    pub streets: Option<PathBuf>,
     pub output: PathBuf,
 }
 
@@ -60,7 +61,7 @@ pub fn render_archive(options: &Options) -> Result<Summary> {
             height: options.height,
         },
         options.colors.as_deref(),
-        &options.streets,
+        options.streets.as_deref(),
     )?;
 
     let volume = read_volume(&options.archive)

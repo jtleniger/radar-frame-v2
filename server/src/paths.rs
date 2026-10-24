@@ -45,6 +45,17 @@ impl Paths {
         self.data_dir().join("streets.osm.bbox")
     }
 
+    /// Content fingerprint of [`Self::streets_osm`], written after parsing.
+    pub fn streets_osm_hash(&self) -> PathBuf {
+        self.data_dir().join("streets.osm.hash")
+    }
+
+    /// Staging path for a newly rasterized mask; only renamed over
+    /// [`Self::streets_img`] after it has been validated.
+    pub fn streets_img_part(&self) -> PathBuf {
+        self.data_dir().join("streets.png.part")
+    }
+
     pub fn palette_img(&self) -> PathBuf {
         self.data_dir().join("palette.png")
     }

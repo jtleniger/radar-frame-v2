@@ -197,7 +197,7 @@ fn archive_summary_reports_elevations_and_counts() {
             minimum: Some(10.0),
             maximum: None,
             colors: None,
-            streets,
+            streets: Some(streets),
             output,
         })
         .unwrap();
@@ -205,6 +205,37 @@ fn archive_summary_reports_elevations_and_counts() {
     assert_eq!(summary.elevations, vec![1]);
     assert!(summary.radials > 0, "no radials counted");
     assert!(summary.gates > 0, "no gates counted");
+}
+
+/// The radar frame renders without the overlay while the mask is unavailable.
+#[test]
+fn archive_renders_without_a_street_mask() {
+    let archive = Path::new(MINI_ARCHIVE);
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("frame.png");
+
+    let summary =
+        radar_frame::render::archive::render_archive(&radar_frame::render::archive::Options {
+            min_lon: -97.26,
+            min_lat: 35.35,
+            max_lon: -97.21,
+            max_lat: 35.39,
+            width: 800,
+            height: 444,
+            archive: archive.to_path_buf(),
+            elevations: vec![1],
+            minimum: Some(10.0),
+            maximum: None,
+            colors: None,
+            streets: None,
+            output: output.clone(),
+        })
+        .unwrap();
+
+    assert_eq!(summary.elevations, vec![1]);
+    let (width, height, rgba) = pngio::read_rgba(&output).unwrap();
+    assert_eq!((width, height), (800, 444));
+    assert!(rgba.iter().any(|&byte| byte != 0), "frame is blank");
 }
 
 /// The frame path needs every selected elevation; a missing elevation is fatal.

@@ -35,7 +35,15 @@ const NODATA_VALUE: u8 = 1;
 pub fn render_streets(options: &Options) -> Result<()> {
     let xml = std::fs::read_to_string(&options.input)
         .map_err(|e| Error(format!("{}: {e}", options.input.display())))?;
-    let parts = osm::parse_polylines(&xml)?;
+    render_streets_from_xml(&xml, options)
+}
+
+/// Rasterize an OSM body that has already been read, validating the document
+/// root first. Setup renders a downloaded body to a temporary mask before it
+/// commits the OSM file.
+pub fn render_streets_from_xml(xml: &str, options: &Options) -> Result<()> {
+    osm::validate_root(xml)?;
+    let parts = osm::parse_polylines(xml)?;
 
     let transform = Transform::new(
         options.min_lon,
