@@ -160,10 +160,15 @@ radar-frame serve [--bind 0.0.0.0:8000] [--mock]
 ```
 
 `--mock` uses built-in forecast data and skips Open-Meteo/NWS forecast calls.
-Startup creates `data/` if missing, writes `data/palette.png`, and builds the
-street mask when it is missing or stamped for another `[bbox]`. The mask is
-downloaded from Overpass only then; a hand-written `data/streets.osm` is
-adopted without a request. `setup` performs the same steps without serving.
+Startup creates `data/` if missing and writes `data/palette.png`. The street
+mask is built in the background when it is missing or stamped for another
+`[bbox]`; Overpass failures are retried with exponential backoff, and frames
+are served without the overlay until it is ready. The mask is downloaded from
+Overpass only then; a hand-written `data/streets.osm` is adopted without a
+request once it parses. Downloaded OSM bodies and rendered masks are validated
+before replacing the previous files, and `data/streets.osm.hash` records the
+body fingerprint. `setup` performs the same steps without serving and fails if
+the mask cannot be built.
 
 Logs go to `radar-frame.log`, rotated at 100 kB with four backups.
 

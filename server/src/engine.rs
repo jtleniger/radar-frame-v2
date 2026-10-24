@@ -74,6 +74,7 @@ impl Engine {
         minimum: f64,
         output: &Path,
     ) -> Result<crate::render::archive::Summary> {
+        let streets = self.paths.streets_img();
         Ok(crate::render::archive::render_archive(
             &crate::render::archive::Options {
                 min_lon: self.bounds.min_lon,
@@ -87,7 +88,7 @@ impl Engine {
                 minimum: Some(minimum as f32),
                 maximum: None,
                 colors: self.colors.clone(),
-                streets: self.paths.streets_img(),
+                streets: streets.is_file().then_some(streets),
                 output: output.to_path_buf(),
             },
         )?)

@@ -18,25 +18,46 @@ pub(crate) struct Bounds {
     pub height: usize,
 }
 
-/// Read the color table and street mask and build the geotransform.
+/// Read the color table and optional street mask and build the geotransform.
+///
+/// `None` means the mask has not been built yet: the radar frame is rendered
+/// without the overlay rather than failing the cycle. A fully opaque neutral
+/// mask passes the colorized radar through unchanged.
 pub(crate) fn load_frame(
     bounds: &Bounds,
     colors: Option<&Path>,
-    streets_path: &Path,
+    streets_path: Option<&Path>,
 ) -> Result<(Transform, pngio::Gray8, ColorTable)> {
     let table = ColorTable::load(colors)?;
 
-    let streets = pngio::read_gray8(streets_path)?;
-    if (streets.width, streets.height) != (bounds.width, bounds.height) {
-        return Err(Error(format!(
-            "{}: street mask is {}x{}, frame is {}x{}",
-            streets_path.display(),
-            streets.width,
-            streets.height,
-            bounds.width,
-            bounds.height
-        )));
-    }
+    let streets = match streets_path {
+        Some(streets_path) => {
+            let streets = pngio::read_gray8(streets_path)?;
+            if (streets.width, streets.height) != (bounds.width, bounds.height) {
+                return Err(Error(format!(
+                    "{}: street mask is {}x{}, frame is {}x{}",
+                    streets_path.display(),
+                    streets.width,
+                    streets.height,
+                    bounds.width,
+                    bounds.height
+                )));
+            }
+            streets
+        }
+        None => {
+            let pixels = bounds
+                .width
+                .checked_mul(bounds.height)
+                .ok_or_else(|| Error("frame size is too large".into()))?;
+            pngio::Gray8 {
+                width: bounds.width,
+                height: bounds.height,
+                samples: vec![255; pixels],
+                transparent: None,
+            }
+        }
+    };
 
     let transform = Transform::new(
         bounds.min_lon,
