@@ -21,6 +21,7 @@ pub mod modes;
 pub mod nexrad;
 pub mod paths;
 pub mod render;
+pub mod settings;
 pub mod setup;
 pub mod sources;
 pub mod startup;

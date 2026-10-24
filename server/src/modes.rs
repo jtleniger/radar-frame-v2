@@ -8,11 +8,11 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 
-use crate::config::Config;
 use crate::engine::Renderer;
 use crate::error::{Error, Result};
 use crate::metrics::{elapsed_ms, Metrics};
 use crate::paths::Paths;
+use crate::settings::Settings;
 use crate::sources::{AlertSource, Forecast, ForecastSource, RadarSource};
 use crate::state::{Mode, State};
 use crate::view::forecast::Alert;
@@ -23,7 +23,7 @@ const MINIMUM_DBZ: f64 = 10.0;
 
 pub struct Deps<'a> {
     pub paths: &'a Paths,
-    pub config: &'a Config,
+    pub settings: &'a Settings,
     pub engine: &'a Arc<dyn Renderer>,
     pub forecast: &'a dyn ForecastSource,
     pub alerts: &'a dyn AlertSource,
@@ -54,7 +54,7 @@ pub async fn run(mode: Mode, deps: &Deps<'_>, state: &mut State) -> Result<Cycle
 }
 
 async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
-    let nexrad_id = deps.config.get("radar", "nexrad_id")?;
+    let nexrad_id = deps.settings.nexrad_id.as_str();
     let mut cycle = Cycle::default();
 
     let started = Instant::now();

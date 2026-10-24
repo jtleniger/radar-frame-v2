@@ -10,6 +10,7 @@ use radar_frame::config::Config;
 use radar_frame::engine::{Engine, Renderer};
 use radar_frame::modes::{self, Deps};
 use radar_frame::paths::Paths;
+use radar_frame::settings::Settings;
 use radar_frame::sources::mock::MockProvider;
 use radar_frame::sources::{
     AlertSource, Forecast, ForecastSource, Object, RadarSource, RadarStatus, RadarStatusSource,
@@ -29,6 +30,8 @@ min_lon = -97.26
 max_lon = -97.21
 
 [forecast]
+lat = 35.37
+lon = -97.23
 timezone = America/Chicago
 
 [nws]
@@ -178,10 +181,11 @@ async fn rejected_volume_keeps_the_last_good_pair() {
     };
     let metrics = radar_frame::metrics::Metrics::new(now());
     let mut state = State::new();
+    let settings = Settings::from_config(&config).unwrap();
 
     let deps = Deps {
         paths: &paths,
-        config: &config,
+        settings: &settings,
         engine: &engine,
         forecast: &provider,
         alerts: &provider,
@@ -206,7 +210,8 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
     let config = Config::parse(CONFIG).unwrap();
     write_eink_png(&paths.palette_img()).unwrap();
 
-    let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &config).unwrap());
+    let settings = Settings::from_config(&config).unwrap();
+    let engine: Arc<dyn Renderer> = Arc::new(Engine::new(paths.clone(), &settings));
     let provider = CountingProvider::new();
     let radar = NoRadar;
     let metrics = radar_frame::metrics::Metrics::new(now());
@@ -216,7 +221,7 @@ async fn clear_mode_fetches_a_new_forecast_each_cycle() {
     for _ in 0..2 {
         let deps = Deps {
             paths: &paths,
-            config: &config,
+            settings: &settings,
             engine: &engine,
             forecast: &provider,
             alerts: &provider,
@@ -334,9 +339,10 @@ async fn storm_with_failing_radar(radar: &dyn RadarSource) -> modes::Cycle {
     let provider = MockProvider::new();
     let metrics = radar_frame::metrics::Metrics::new(now());
     let mut state = State::new();
+    let settings = Settings::from_config(&config).unwrap();
     let deps = Deps {
         paths: &paths,
-        config: &config,
+        settings: &settings,
         engine: &engine,
         forecast: &provider,
         alerts: &provider,
