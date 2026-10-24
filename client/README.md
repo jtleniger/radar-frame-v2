@@ -40,7 +40,7 @@ file = radar-frame.log
 level = INFO
 
 [server]
-base_url = http://radar-frame.local:8000/
+base_url = http://192.168.1.10:8000/
 poll_seconds = 120
 connect_timeout_seconds = 5
 request_timeout_seconds = 30
@@ -49,7 +49,10 @@ request_timeout_seconds = 30
 use_noop = false
 ```
 
-`base_url` may include a path prefix; a missing trailing slash is added.
+`base_url` may include a path prefix; a missing trailing slash is added. Use an
+IP address or a name in `/etc/hosts`: the static musl binary does not load
+glibc NSS modules, so Avahi `.local` names will not resolve. Normal DNS through
+`/etc/resolv.conf` and `/etc/hosts` works.
 Relative `file` paths resolve from the working directory. Logs rotate at 100 kB
 with four backups, or go to stderr if the file cannot be opened.
 
