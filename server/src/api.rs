@@ -74,13 +74,37 @@ impl AppState {
     }
 
     /// Swap the mode from the NWS radar status. True when it changed.
-    async fn update_mode(&self, state: &mut State) -> Result<bool> {
+    ///
+    /// The sample is reused for [`crate::state::STATUS_TTL`]; a failure keeps
+    /// the last known status and mode and is not retried until the TTL passes.
+    /// The state lock is held across the call, so a second concurrent poll
+    /// finds the refreshed timestamp and takes the cached path.
+    async fn update_mode(
+        &self,
+        state: &mut State,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        if now < state.status_next_attempt {
+            return Ok(false);
+        }
+
         let previous = state.mode;
         let started = Instant::now();
         let status = self.provider.radar_status().await;
         self.metrics
-            .upstream(self.clock.now(), started.elapsed(), status.is_ok());
-        let status = status?;
+            .upstream(now, started.elapsed(), status.is_ok());
+
+        state.status_checked_at = now;
+        state.status_next_attempt = now + crate::state::STATUS_TTL;
+
+        let status = match status {
+            Ok(status) => status,
+            Err(error) => {
+                // Keep the last-known-good status and the current mode.
+                return Err(error);
+            }
+        };
+        state.radar_status = Some(status);
 
         tracing::info!("radar status: up={} vcp={}", status.up, status.vcp);
 
@@ -149,7 +173,20 @@ async fn readyz(AxumState(app): AxumState<Arc<AppState>>) -> Response {
 async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
     let now = app.clock.now();
     let writable = setup::data_writable(&app.paths);
-    let (fields, mode, manual_til, last_updated, frame, ready, reason) = {
+    let (
+        fields,
+        mode,
+        manual_til,
+        last_updated,
+        frame,
+        last_attempt,
+        next_attempt,
+        failures,
+        radar_status,
+        status_checked_at,
+        ready,
+        reason,
+    ) = {
         let state = app.state.lock().await;
         let (ready, reason) = readiness(&state, now, writable);
         (
@@ -158,6 +195,11 @@ async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
             state.manual_til,
             state.last_updated,
             state.frame.clone(),
+            state.last_attempt,
+            state.next_attempt,
+            state.failures,
+            state.radar_status,
+            state.status_checked_at,
             ready,
             reason,
         )
@@ -184,6 +226,15 @@ async fn status(AxumState(app): AxumState<Arc<AppState>>) -> Response {
         "mode_select": fields.mode_select,
         "manual_til": manual_til.and_then(timestamp),
         "last_updated": timestamp(last_updated),
+        "last_attempt": timestamp(last_attempt),
+        "next_attempt": timestamp(next_attempt),
+        "failures": failures,
+        "radar_status": radar_status.map(|status| json!({
+            "up": status.up,
+            "vcp": status.vcp,
+            "checked_at": timestamp(status_checked_at),
+            "age_seconds": age_seconds(now, status_checked_at),
+        })),
         "ready": ready,
         "ready_reason": reason,
         "data_writable": writable,
@@ -361,7 +412,7 @@ async fn settings(
     }
 
     if previous != state.mode {
-        state.last_updated = chrono::DateTime::UNIX_EPOCH;
+        state.reschedule_now();
     }
 
     let fields = fields(&state, app.timezone);
@@ -408,10 +459,10 @@ async fn frame(
     }
 
     if state.mode_select == ModeSelect::Auto {
-        match app.update_mode(&mut state).await {
+        match app.update_mode(&mut state, now).await {
             Ok(changed) => {
                 if changed {
-                    state.last_updated = chrono::DateTime::UNIX_EPOCH;
+                    state.reschedule_now();
                 }
             }
             Err(error) => {
@@ -424,7 +475,7 @@ async fn frame(
         tracing::info!("manual mode, maintaining state");
     }
 
-    if now > state.last_updated + state.mode.interval() {
+    if state.cycle_due(now) {
         let deps = Deps {
             paths: &app.paths,
             config: &app.config,
@@ -451,6 +502,7 @@ async fn frame(
                     "cycle failed"
                 );
                 tracing::error!("{} mode failed: {error}", mode.name());
+                state.cycle_failed(now, mode);
                 return last_good(&state, &headers);
             }
         };
@@ -471,6 +523,7 @@ async fn frame(
                             "cycle failed"
                         );
                         tracing::error!("{}: {error}", app.paths.output_img().display());
+                        state.cycle_failed(now, mode);
                         return last_good(&state, &headers);
                     }
                 }
@@ -487,12 +540,13 @@ async fn frame(
                     "cycle failed"
                 );
                 tracing::error!("{}: {error}", app.paths.output_img().display());
+                state.cycle_failed(now, mode);
                 return last_good(&state, &headers);
             }
         };
 
         let frame = Arc::new(frame);
-        state.last_updated = now;
+        state.cycle_succeeded(now, mode);
         state.frame = Some(Arc::clone(&frame));
         drop(state);
 
@@ -520,6 +574,11 @@ async fn frame(
             "cycle complete"
         );
         frame.response(&headers)
+    } else if state.failures > 0 {
+        // A cycle failed and the backoff has not elapsed. Keep serving the
+        // last good frame rather than a bare 304, so a client that restarted
+        // during the outage still gets a usable image.
+        last_good(&state, &headers)
     } else {
         // The polling contract: no new frame is due, so tell the client to
         // keep what it has. Include the tag for clients that track it.

@@ -2,7 +2,7 @@
 //! service at `capture.py`'s fixed clock.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use radar_frame::api::{self, AppState};
-use radar_frame::clock::FixedClock;
+use radar_frame::clock::{Clock, FixedClock};
 use radar_frame::config::Config;
 use radar_frame::engine::{Engine, Renderer};
 use radar_frame::paths::Paths;
@@ -156,6 +156,118 @@ impl ForecastProvider for FlakyProvider {
     }
 }
 
+/// Provider that counts each upstream call and can fail them independently.
+struct CountingProvider {
+    forecast: Forecast,
+    alerts: Vec<radar_frame::view::forecast::Alert>,
+    status: RadarStatus,
+    forecast_calls: AtomicUsize,
+    alert_calls: AtomicUsize,
+    status_calls: AtomicUsize,
+    fail_forecast: AtomicBool,
+    fail_alerts: AtomicBool,
+    fail_status: AtomicBool,
+}
+
+impl CountingProvider {
+    fn new() -> Self {
+        CountingProvider {
+            forecast: MockProvider::new().forecast_data().clone(),
+            alerts: Vec::new(),
+            status: RadarStatus { up: true, vcp: 31 },
+            forecast_calls: AtomicUsize::new(0),
+            alert_calls: AtomicUsize::new(0),
+            status_calls: AtomicUsize::new(0),
+            fail_forecast: AtomicBool::new(false),
+            fail_alerts: AtomicBool::new(false),
+            fail_status: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl ForecastProvider for CountingProvider {
+    async fn forecast(&self) -> radar_frame::error::Result<Forecast> {
+        self.forecast_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_forecast.load(Ordering::SeqCst) {
+            return Err(radar_frame::error::Error::new("forecast unavailable"));
+        }
+        Ok(self.forecast.clone())
+    }
+
+    async fn alerts(&self) -> radar_frame::error::Result<Vec<radar_frame::view::forecast::Alert>> {
+        self.alert_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_alerts.load(Ordering::SeqCst) {
+            return Err(radar_frame::error::Error::new("alerts unavailable"));
+        }
+        Ok(self.alerts.clone())
+    }
+
+    async fn radar_status(&self) -> radar_frame::error::Result<RadarStatus> {
+        self.status_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_status.load(Ordering::SeqCst) {
+            return Err(radar_frame::error::Error::new("status unavailable"));
+        }
+        Ok(self.status)
+    }
+}
+
+/// Real clear/storm views with a switch for failing the clear render.
+struct ToggleRenderer {
+    engine: Engine,
+    radar_png: PathBuf,
+    fail_clear: AtomicBool,
+    clear_calls: AtomicUsize,
+}
+
+impl ToggleRenderer {
+    fn new(fixture: &Fixture, radar_png: PathBuf) -> Self {
+        ToggleRenderer {
+            engine: Engine::new(fixture.paths.clone(), &fixture.config).unwrap(),
+            radar_png,
+            fail_clear: AtomicBool::new(false),
+            clear_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Renderer for ToggleRenderer {
+    fn render_radar(
+        &self,
+        _volume: &Path,
+        _minimum: f64,
+        output: &Path,
+    ) -> radar_frame::error::Result<radar_frame::render::archive::Summary> {
+        std::fs::copy(&self.radar_png, output)?;
+        Ok(radar_frame::render::archive::Summary {
+            elevations: vec![1],
+            radials: 1,
+            gates: 1,
+        })
+    }
+
+    fn render_storm(
+        &self,
+        alerts: &[radar_frame::view::forecast::Alert],
+        now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        self.engine.render_storm(alerts, now)
+    }
+
+    fn render_clear(
+        &self,
+        forecast: &Forecast,
+        alerts: &[radar_frame::view::forecast::Alert],
+        now: DateTime<Utc>,
+    ) -> radar_frame::error::Result<()> {
+        self.clear_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_clear.load(Ordering::SeqCst) {
+            return Err(radar_frame::error::Error::new("render failed"));
+        }
+        self.engine.render_clear(forecast, alerts, now)
+    }
+}
+
 struct TestRenderer {
     engine: Engine,
     radar_png: PathBuf,
@@ -224,6 +336,33 @@ impl RadarSource for FakeRadar {
     }
 }
 
+/// A clock the test can move forward between polls.
+struct TestClock {
+    now: AtomicI64,
+}
+
+impl TestClock {
+    fn new(at: DateTime<Utc>) -> Self {
+        TestClock {
+            now: AtomicI64::new(at.timestamp()),
+        }
+    }
+
+    fn advance(&self, by: chrono::Duration) {
+        self.now.fetch_add(by.num_seconds(), Ordering::SeqCst);
+    }
+
+    fn set(&self, at: DateTime<Utc>) {
+        self.now.store(at.timestamp(), Ordering::SeqCst);
+    }
+}
+
+impl Clock for TestClock {
+    fn now(&self) -> DateTime<Utc> {
+        DateTime::from_timestamp(self.now.load(Ordering::SeqCst), 0).unwrap()
+    }
+}
+
 fn real_renderer(fixture: &Fixture) -> Arc<dyn Renderer> {
     Arc::new(Engine::new(fixture.paths.clone(), &fixture.config).unwrap())
 }
@@ -234,11 +373,27 @@ fn app(
     radar: Arc<dyn RadarSource>,
     renderer: Arc<dyn Renderer>,
 ) -> (Router, Arc<AppState>) {
+    app_with_clock(
+        fixture,
+        provider,
+        radar,
+        renderer,
+        Arc::new(FixedClock(now())),
+    )
+}
+
+fn app_with_clock(
+    fixture: &Fixture,
+    provider: Arc<dyn ForecastProvider>,
+    radar: Arc<dyn RadarSource>,
+    renderer: Arc<dyn Renderer>,
+    clock: Arc<dyn Clock>,
+) -> (Router, Arc<AppState>) {
     let state = Arc::new(
         AppState::new(
             fixture.config.clone(),
             fixture.paths.clone(),
-            Arc::new(FixedClock(now())),
+            clock,
             provider,
             radar,
             renderer,
@@ -496,6 +651,7 @@ async fn manual_mode_expires_back_to_auto() {
         state.mode = Mode::Clear;
         state.manual_til = Some(now() - chrono::Duration::minutes(1));
         state.last_updated = now();
+        state.next_attempt = now() + Mode::Clear.interval();
     }
 
     let response = get(&router, "/frame").await;
@@ -562,6 +718,11 @@ async fn operational_endpoints_report_frame_and_counters() {
     assert_eq!(status["counters"]["cycles_failed"], 0);
     assert!(status["counters"]["upstream_total"].as_u64().unwrap() >= 3);
     assert_eq!(status["last_cycle"]["outcome"], "ok");
+    assert_eq!(status["failures"], 0);
+    assert!(status["last_attempt"].is_string());
+    assert!(status["next_attempt"].is_string());
+    assert_eq!(status["radar_status"]["up"], true);
+    assert_eq!(status["radar_status"]["vcp"], 31);
     assert_eq!(state.metrics.requests_total(), 5);
 }
 
@@ -639,6 +800,7 @@ async fn radar_status_failure_keeps_the_last_mode() {
         let mut state = state.state.lock().await;
         state.mode = Mode::Storm;
         state.last_updated = now();
+        state.next_attempt = now() + Mode::Storm.interval();
     }
 
     let response = get(&router, "/frame").await;
@@ -690,9 +852,15 @@ async fn failed_cycle_serves_the_last_good_frame() {
     let etag = response.headers()[header::ETAG].clone();
     let first = body_bytes(response).await;
 
-    // Fail the next cycle and make it due immediately.
+    // Fail the next cycle and make it due immediately. Clearing the caches
+    // makes the upstream failure fatal instead of serving last-good data.
     provider.fail_forecast.store(true, Ordering::SeqCst);
-    state.state.lock().await.last_updated = DateTime::UNIX_EPOCH;
+    {
+        let mut state = state.state.lock().await;
+        state.forecast = None;
+        state.alerts = None;
+        state.reschedule_now();
+    }
 
     let response = get(&router, "/frame").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -742,7 +910,7 @@ async fn matching_if_none_match_returns_304() {
     assert_eq!(response.status(), StatusCode::OK);
     let etag = response.headers()[header::ETAG].clone();
 
-    state.state.lock().await.last_updated = DateTime::UNIX_EPOCH;
+    state.state.lock().await.reschedule_now();
 
     let mut headers = HeaderMap::new();
     headers.insert(header::IF_NONE_MATCH, etag);
@@ -750,7 +918,7 @@ async fn matching_if_none_match_returns_304() {
     assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
     assert!(body_bytes(response).await.is_empty());
 
-    state.state.lock().await.last_updated = DateTime::UNIX_EPOCH;
+    state.state.lock().await.reschedule_now();
     let mut headers = HeaderMap::new();
     headers.insert(header::IF_NONE_MATCH, "\"not-the-tag\"".parse().unwrap());
     let response = get_with_headers(&router, "/frame", headers).await;
@@ -802,4 +970,204 @@ async fn debug_frame_maps_read_errors() {
     );
     let response = get(&router, "/frame?debug=true").await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn radar_status_is_cached_for_a_minute_and_single_flight() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new(now()));
+    let provider = Arc::new(CountingProvider::new());
+    let (router, state) = app_with_clock(
+        &fixture,
+        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+        clock.clone(),
+    );
+
+    // Two concurrent polls share one status request.
+    let (first, second) = tokio::join!(get(&router, "/frame"), get(&router, "/frame"));
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(provider.status_calls.load(Ordering::SeqCst), 1);
+
+    // Still inside the TTL: no new request.
+    assert_eq!(
+        get(&router, "/frame").await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(provider.status_calls.load(Ordering::SeqCst), 1);
+
+    // Past the TTL: exactly one refresh, even though no cycle is due.
+    clock.advance(chrono::Duration::seconds(61));
+    assert_eq!(
+        get(&router, "/frame").await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(provider.status_calls.load(Ordering::SeqCst), 2);
+
+    let state = state.state.lock().await;
+    assert_eq!(state.radar_status, Some(RadarStatus { up: true, vcp: 31 }));
+    assert_eq!(state.failures, 0);
+}
+
+#[tokio::test]
+async fn radar_status_failure_is_not_retried_until_the_ttl_expires() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new(now()));
+    let provider = Arc::new(CountingProvider::new());
+    let (router, state) = app_with_clock(
+        &fixture,
+        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+        clock.clone(),
+    );
+
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    provider.fail_status.store(true, Ordering::SeqCst);
+
+    clock.advance(chrono::Duration::seconds(61));
+    assert_eq!(
+        get(&router, "/frame").await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(provider.status_calls.load(Ordering::SeqCst), 2);
+
+    // The failed request is cached too, and the last good status and mode
+    // survive the outage.
+    assert_eq!(
+        get(&router, "/frame").await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(provider.status_calls.load(Ordering::SeqCst), 2);
+
+    let state = state.state.lock().await;
+    assert_eq!(state.radar_status, Some(RadarStatus { up: true, vcp: 31 }));
+    assert_eq!(state.mode, Mode::Clear);
+}
+
+#[tokio::test]
+async fn failed_cycle_backs_off_and_keeps_serving_the_last_good_frame() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new(now()));
+    let renderer = Arc::new(ToggleRenderer::new(&fixture, golden("debug-frame.png")));
+    let (router, state) = app_with_clock(
+        &fixture,
+        Arc::new(MockProvider::new()),
+        Arc::new(FakeRadar::default()),
+        Arc::clone(&renderer) as Arc<dyn Renderer>,
+        clock.clone(),
+    );
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let first = body_bytes(response).await;
+    assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 1);
+
+    renderer.fail_clear.store(true, Ordering::SeqCst);
+    state.state.lock().await.reschedule_now();
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await, first);
+    assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 2);
+
+    let (next_attempt, failures) = {
+        let state = state.state.lock().await;
+        (state.next_attempt, state.failures)
+    };
+    assert_eq!(failures, 1);
+    assert!(next_attempt > clock.now(), "a retry must be scheduled");
+
+    // Before the retry is due every poll serves the last good frame without
+    // touching the renderer or upstream again.
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 2);
+
+    clock.set(next_attempt);
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(renderer.clear_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(state.state.lock().await.failures, 2);
+}
+
+#[tokio::test]
+async fn forecast_failure_serves_the_last_good_forecast() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new(now()));
+    let provider = Arc::new(CountingProvider::new());
+    let (router, state) = app_with_clock(
+        &fixture,
+        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+        clock.clone(),
+    );
+
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(provider.forecast_calls.load(Ordering::SeqCst), 1);
+
+    provider.fail_forecast.store(true, Ordering::SeqCst);
+    state.state.lock().await.reschedule_now();
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(provider.forecast_calls.load(Ordering::SeqCst), 2);
+
+    let degraded = state
+        .state
+        .lock()
+        .await
+        .frame
+        .as_ref()
+        .unwrap()
+        .degraded
+        .clone()
+        .unwrap();
+    assert!(degraded.contains("forecast"), "{degraded}");
+    assert!(degraded.contains("using last good"), "{degraded}");
+
+    // The degraded frame is a normal success, so the next poll is a 304.
+    assert_eq!(
+        get(&router, "/frame").await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    assert_eq!(provider.forecast_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn alert_failure_serves_the_last_good_alerts() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new(now()));
+    let provider = Arc::new(CountingProvider::new());
+    let (router, state) = app_with_clock(
+        &fixture,
+        Arc::clone(&provider) as Arc<dyn ForecastProvider>,
+        Arc::new(FakeRadar::default()),
+        real_renderer(&fixture),
+        clock.clone(),
+    );
+
+    assert_eq!(get(&router, "/frame").await.status(), StatusCode::OK);
+    assert_eq!(provider.alert_calls.load(Ordering::SeqCst), 1);
+
+    provider.fail_alerts.store(true, Ordering::SeqCst);
+    state.state.lock().await.reschedule_now();
+
+    let response = get(&router, "/frame").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(provider.alert_calls.load(Ordering::SeqCst), 2);
+
+    let degraded = state
+        .state
+        .lock()
+        .await
+        .frame
+        .as_ref()
+        .unwrap()
+        .degraded
+        .clone()
+        .unwrap();
+    assert!(degraded.contains("alerts"), "{degraded}");
+    assert!(degraded.contains("using last good"), "{degraded}");
 }

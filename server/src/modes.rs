@@ -13,8 +13,9 @@ use crate::engine::Renderer;
 use crate::error::{Error, Result};
 use crate::metrics::{elapsed_ms, Metrics};
 use crate::paths::Paths;
-use crate::sources::{ForecastProvider, RadarSource};
+use crate::sources::{Forecast, ForecastProvider, RadarSource};
 use crate::state::{Mode, State};
+use crate::view::forecast::Alert;
 
 /// The default gate cutoff used by the frame path (`render()` in
 /// `components/radar/render.py`).
@@ -47,7 +48,7 @@ pub struct Cycle {
 pub async fn run(mode: Mode, deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     match mode {
         Mode::Storm => storm(deps, state).await,
-        Mode::Clear => clear(deps).await,
+        Mode::Clear => clear(deps, state).await,
     }
 }
 
@@ -60,9 +61,22 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     deps.metrics
         .upstream(deps.now, started.elapsed(), latest.is_ok());
 
+    // A failed listing falls back to the volume already on disk. The cycle
+    // only fails when there is no last good volume to render.
+    let latest = match latest {
+        Ok(latest) => latest,
+        Err(error) => {
+            if !deps.paths.radar_raw().exists() {
+                return Err(error);
+            }
+            tracing::warn!("radar listing unavailable, using the last good volume: {error}");
+            degrade(&mut cycle, format!("radar: {error}"));
+            None
+        }
+    };
+
     let mut radar_summary = None;
-    if let Some(object) = latest? {
-        cycle.volume_key = Some(object.key.clone());
+    if let Some(object) = latest {
         if object.last_modified > state.radar_last_updated {
             tracing::info!("downloading {}", object.key);
             let part = deps.paths.radar_part();
@@ -70,43 +84,54 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
             let downloaded = deps.radar.download(&object, &part).await;
             deps.metrics
                 .upstream(deps.now, started.elapsed(), downloaded.is_ok());
-            if let Err(error) = downloaded {
-                remove(&part);
-                return Err(error);
-            }
 
-            // Parse and render the staged volume before it can replace the
-            // last good pair. A bad volume leaves `nexrad-latest.ar2` and
-            // `nexrad-latest.png` untouched.
-            let png_part = deps.paths.radar_img_part();
-            let volume = part.clone();
-            let output = png_part.clone();
-            let started = Instant::now();
-            let summary = match render(Arc::clone(deps.engine), move |engine| {
-                engine.render_radar(&volume, MINIMUM_DBZ, &output)
-            })
-            .await
-            {
-                Ok(summary) => summary,
+            match downloaded {
+                Ok(_) => {
+                    // Parse and render the staged volume before it can replace
+                    // the last good pair. A bad volume leaves
+                    // `nexrad-latest.ar2` and `nexrad-latest.png` untouched.
+                    let png_part = deps.paths.radar_img_part();
+                    let volume = part.clone();
+                    let output = png_part.clone();
+                    let started = Instant::now();
+                    let rendered = render(Arc::clone(deps.engine), move |engine| {
+                        engine.render_radar(&volume, MINIMUM_DBZ, &output)
+                    })
+                    .await;
+                    cycle.render_ms += elapsed_ms(started.elapsed());
+
+                    match rendered {
+                        Ok(summary) => {
+                            let raw = deps.paths.radar_raw();
+                            let radar_img = deps.paths.radar_img();
+                            match commit(&part, &raw).and_then(|()| commit(&png_part, &radar_img)) {
+                                Ok(()) => {
+                                    cycle.volume_key = Some(object.key.clone());
+                                    state.radar_last_updated = object.last_modified;
+                                    radar_summary = Some(summary);
+                                }
+                                Err(error) => {
+                                    remove(&part);
+                                    remove(&png_part);
+                                    degrade(&mut cycle, format!("radar: {error}"));
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            remove(&part);
+                            remove(&png_part);
+                            degrade(&mut cycle, format!("radar: {error}"));
+                        }
+                    }
+                }
                 Err(error) => {
                     remove(&part);
-                    remove(&png_part);
-                    return Err(error);
+                    degrade(&mut cycle, format!("radar: {error}"));
                 }
-            };
-            cycle.render_ms += elapsed_ms(started.elapsed());
-
-            let raw = deps.paths.radar_raw();
-            let radar_img = deps.paths.radar_img();
-            if let Err(error) = commit(&part, &raw).and_then(|()| commit(&png_part, &radar_img)) {
-                remove(&part);
-                remove(&png_part);
-                return Err(error);
             }
-            state.radar_last_updated = object.last_modified;
-            radar_summary = Some(summary);
         } else {
             tracing::info!("using old radar data");
+            cycle.volume_key = Some(object.key);
         }
     }
 
@@ -131,18 +156,7 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     cycle.radials = summary.radials;
     cycle.gates = summary.gates;
 
-    let started = Instant::now();
-    let alerts = deps.provider.alerts().await;
-    deps.metrics
-        .upstream(deps.now, started.elapsed(), alerts.is_ok());
-    let (alerts, degraded) = match alerts {
-        Ok(alerts) => (alerts, None),
-        Err(error) => {
-            tracing::warn!("alerts unavailable, rendering without them: {error}");
-            (Vec::new(), Some(format!("alerts: {error}")))
-        }
-    };
-    cycle.alerts = alerts.len();
+    let alerts = alerts(deps, state, &mut cycle).await;
     let now = deps.now;
     let started = Instant::now();
     render(Arc::clone(deps.engine), move |engine| {
@@ -150,31 +164,14 @@ async fn storm(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     })
     .await?;
     cycle.render_ms += elapsed_ms(started.elapsed());
-    cycle.degraded = degraded;
     Ok(cycle)
 }
 
-async fn clear(deps: &Deps<'_>) -> Result<Cycle> {
+async fn clear(deps: &Deps<'_>, state: &mut State) -> Result<Cycle> {
     let mut cycle = Cycle::default();
 
-    let started = Instant::now();
-    let forecast = deps.provider.forecast().await;
-    deps.metrics
-        .upstream(deps.now, started.elapsed(), forecast.is_ok());
-    let forecast = forecast?;
-
-    let started = Instant::now();
-    let alerts = deps.provider.alerts().await;
-    deps.metrics
-        .upstream(deps.now, started.elapsed(), alerts.is_ok());
-    let (alerts, degraded) = match alerts {
-        Ok(alerts) => (alerts, None),
-        Err(error) => {
-            tracing::warn!("alerts unavailable, rendering without them: {error}");
-            (Vec::new(), Some(format!("alerts: {error}")))
-        }
-    };
-    cycle.alerts = alerts.len();
+    let forecast = forecast(deps, state, &mut cycle).await?;
+    let alerts = alerts(deps, state, &mut cycle).await;
     let now = deps.now;
 
     let started = Instant::now();
@@ -183,8 +180,74 @@ async fn clear(deps: &Deps<'_>) -> Result<Cycle> {
     })
     .await?;
     cycle.render_ms += elapsed_ms(started.elapsed());
-    cycle.degraded = degraded;
     Ok(cycle)
+}
+
+/// Fetch the forecast, falling back to the last good one when the upstream
+/// call fails. The cycle fails only before a forecast has ever been cached.
+async fn forecast(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Result<Arc<Forecast>> {
+    let started = Instant::now();
+    let forecast = deps.provider.forecast().await;
+    deps.metrics
+        .upstream(deps.now, started.elapsed(), forecast.is_ok());
+
+    match forecast {
+        Ok(forecast) => {
+            let forecast = Arc::new(forecast);
+            state.forecast = Some(Arc::clone(&forecast));
+            Ok(forecast)
+        }
+        Err(error) => match state.forecast.clone() {
+            Some(cached) => {
+                let reason = format!("forecast: {error} (using last good)");
+                tracing::warn!("{reason}");
+                degrade(cycle, reason);
+                Ok(cached)
+            }
+            None => Err(error),
+        },
+    }
+}
+
+/// Fetch alerts, falling back to the last good list and then to an empty list.
+/// A missing alert layer never fails the frame.
+async fn alerts(deps: &Deps<'_>, state: &mut State, cycle: &mut Cycle) -> Arc<[Alert]> {
+    let started = Instant::now();
+    let alerts = deps.provider.alerts().await;
+    deps.metrics
+        .upstream(deps.now, started.elapsed(), alerts.is_ok());
+
+    let alerts = match alerts {
+        Ok(alerts) => {
+            let alerts: Arc<[Alert]> = alerts.into();
+            state.alerts = Some(Arc::clone(&alerts));
+            alerts
+        }
+        Err(error) => match state.alerts.clone() {
+            Some(cached) => {
+                let reason = format!("alerts: {error} (using last good)");
+                tracing::warn!("{reason}");
+                degrade(cycle, reason);
+                cached
+            }
+            None => {
+                let reason = format!("alerts: {error}");
+                tracing::warn!("alerts unavailable, rendering without them: {error}");
+                degrade(cycle, reason);
+                Arc::from(Vec::new())
+            }
+        },
+    };
+    cycle.alerts = alerts.len();
+    alerts
+}
+
+/// Append a failed layer to the cycle's degraded reason.
+fn degrade(cycle: &mut Cycle, reason: String) {
+    cycle.degraded = Some(match cycle.degraded.take() {
+        Some(existing) => format!("{existing}; {reason}"),
+        None => reason,
+    });
 }
 
 async fn render<T, F>(engine: Arc<dyn Renderer>, f: F) -> Result<T>
