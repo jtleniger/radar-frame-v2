@@ -103,6 +103,42 @@ An ARMv7 binary will crash with an illegal instruction on an ARMv6 Pi, so
 verify the artifact with `readelf -A`: the ARMv6 build reports
 `Tag_CPU_arch: v6` and `Tag_FP_arch: VFPv2`.
 
+### Avahi / `.local` hostnames
+
+A static musl binary cannot load glibc NSS modules, so `libnss-mdns` cannot
+resolve `radar-frame.local` for it. If you want Avahi names and the server's IP
+may change, build the dynamically linked glibc binary instead. Target glibc
+2.31 explicitly so it runs on Debian 11:
+
+```sh
+rustup target add arm-unknown-linux-gnueabihf
+cargo zigbuild --release --manifest-path client/Cargo.toml \
+  --target arm-unknown-linux-gnueabihf.2.31
+```
+
+The output is
+`client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client` (note:
+not the `musleabihf` directory). Verify that no symbol requires a newer glibc:
+
+```sh
+readelf -V client/target/arm-unknown-linux-gnueabihf/release/radar-frame-client \
+  | grep -o 'GLIBC_[0-9.]*' | sort -V | tail
+# highest line must be GLIBC_2.31 or lower
+```
+
+On the Pi, install and check NSS mDNS:
+
+```sh
+sudo apt install libnss-mdns avahi-daemon
+grep '^hosts:' /etc/nsswitch.conf
+# hosts: files mdns4_minimal [NOTFOUND=return] dns
+getent hosts radar-frame.local
+```
+
+The dynamically linked build still has no OpenSSL dependency; TLS is rustls.
+Use the musl build if you do not need `.local` names and prefer a self-contained
+binary.
+
 ### Cross-compile with cross (Docker)
 
 ```sh
